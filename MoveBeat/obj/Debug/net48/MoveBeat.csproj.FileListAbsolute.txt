@@ -1,0 +1,10 @@
+C:\Users\elad1\OneDrive\Desktop\MoveBeat\bin\Debug\net48\MoveBeat.exe.config
+C:\Users\elad1\OneDrive\Desktop\MoveBeat\bin\Debug\net48\MoveBeat.exe
+C:\Users\elad1\OneDrive\Desktop\MoveBeat\bin\Debug\net48\MoveBeat.pdb
+C:\Users\elad1\OneDrive\Desktop\MoveBeat\obj\Debug\net48\MoveBeat.csproj.AssemblyReference.cache
+C:\Users\elad1\OneDrive\Desktop\MoveBeat\obj\Debug\net48\MoveBeat.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\elad1\OneDrive\Desktop\MoveBeat\obj\Debug\net48\MoveBeat.AssemblyInfoInputs.cache
+C:\Users\elad1\OneDrive\Desktop\MoveBeat\obj\Debug\net48\MoveBeat.AssemblyInfo.cs
+C:\Users\elad1\OneDrive\Desktop\MoveBeat\obj\Debug\net48\MoveBeat.csproj.CoreCompileInputs.cache
+C:\Users\elad1\OneDrive\Desktop\MoveBeat\obj\Debug\net48\MoveBeat.exe
+C:\Users\elad1\OneDrive\Desktop\MoveBeat\obj\Debug\net48\MoveBeat.pdb
