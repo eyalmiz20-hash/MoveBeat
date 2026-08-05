@@ -50,11 +50,18 @@ class OscSender : IDisposable
     }
 
     /// <summary>
-    /// Computes the subnet-directed broadcast address (e.g. 192.168.1.255)
-    /// from the first "up", non-loopback IPv4 interface and its subnet mask.
-    /// This is far more reliable than 255.255.255.255, which many routers
-    /// silently drop. Falls back to the limited broadcast address if no
-    /// usable interface/mask is found.
+    /// Resolves the subnet-directed broadcast address (e.g. 192.168.0.255) of
+    /// the WIRED Ethernet interface.
+    ///
+    /// Wi-Fi is deliberately excluded. This machine is on two routable subnets
+    /// at once (Ethernet 192.168.0.x and Wi-Fi 192.168.8.x); broadcasting to
+    /// whichever one happened to enumerate first was non-deterministic and
+    /// could silently change across reboots. The Kinect-to-Max link runs over
+    /// the LAN cable by design: it is the lower-latency, non-contended path,
+    /// which matters for a 30 Hz control stream feeding a synthesizer.
+    ///
+    /// Falls back to the limited broadcast address only if no usable wired
+    /// interface exists at all. Pass --ip to override entirely.
     /// </summary>
     static IPAddress ResolveBroadcastAddress()
     {
@@ -67,41 +74,17 @@ class OscSender : IDisposable
                 if (nic.NetworkInterfaceType == NetworkInterfaceType.Loopback)
                     continue;
 
-                var props = nic.GetIPProperties();
-                foreach (var ua in props.UnicastAddresses)
-                {
-                    if (ua.Address.AddressFamily != AddressFamily.InterNetwork)
-                        continue;
-                    if (ua.IPv4Mask == null)
-                        continue;
+                // Wired only. GigabitEthernet/Ethernet3Megabit are the other
+                // spellings Windows can report; USB Ethernet adapters (this
+                // machine uses a Realtek USB GbE) report as Ethernet.
+                if (nic.NetworkInterfaceType != NetworkInterfaceType.Ethernet &&
+                    nic.NetworkInterfaceType != NetworkInterfaceType.GigabitEthernet &&
+                    nic.NetworkInterfaceType != NetworkInterfaceType.Ethernet3Megabit)
+                    continue;
 
-                    byte[] ipBytes = ua.Address.GetAddressBytes();
-
-                    // Skip APIPA / link-local (169.254.0.0/16). This machine
-                    // reports several of them (Bluetooth PAN, virtual
-                    // adapters) alongside the real Wi-Fi address, and they can
-                    // enumerate first. Broadcasting to a link-local subnet
-                    // reaches nothing, and the failure is silent and
-                    // maddening: the app looks healthy while Max receives
-                    // nothing at all.
-                    if (ipBytes[0] == 169 && ipBytes[1] == 254)
-                        continue;
-
-                    byte[] maskBytes = ua.IPv4Mask.GetAddressBytes();
-
-                    // All-zero mask means "no mask configured" - not usable.
-                    bool maskIsZero = true;
-                    foreach (var b in maskBytes)
-                        if (b != 0) { maskIsZero = false; break; }
-                    if (maskIsZero)
-                        continue;
-
-                    byte[] broadcastBytes = new byte[4];
-                    for (int i = 0; i < 4; i++)
-                        broadcastBytes[i] = (byte)(ipBytes[i] | ~maskBytes[i]);
-
-                    return new IPAddress(broadcastBytes);
-                }
+                IPAddress found = TryGetBroadcast(nic);
+                if (found != null)
+                    return found;
             }
         }
         catch
@@ -111,6 +94,49 @@ class OscSender : IDisposable
         }
 
         return IPAddress.Broadcast;
+    }
+
+    /// <summary>
+    /// Returns the subnet-directed broadcast address for the first usable IPv4
+    /// address on this interface, or null if it has none.
+    /// </summary>
+    static IPAddress TryGetBroadcast(NetworkInterface nic)
+    {
+        var props = nic.GetIPProperties();
+        foreach (var ua in props.UnicastAddresses)
+        {
+            if (ua.Address.AddressFamily != AddressFamily.InterNetwork)
+                continue;
+            if (ua.IPv4Mask == null)
+                continue;
+
+            byte[] ipBytes = ua.Address.GetAddressBytes();
+
+            // Skip APIPA / link-local (169.254.0.0/16). This machine reports
+            // several of them (Bluetooth PAN, virtual adapters), and an
+            // unplugged Ethernet port self-assigns one too. Broadcasting to a
+            // link-local subnet reaches nothing, and the failure is silent:
+            // the app looks healthy while Max receives nothing at all.
+            if (ipBytes[0] == 169 && ipBytes[1] == 254)
+                continue;
+
+            byte[] maskBytes = ua.IPv4Mask.GetAddressBytes();
+
+            // All-zero mask means "no mask configured" - not usable.
+            bool maskIsZero = true;
+            foreach (var b in maskBytes)
+                if (b != 0) { maskIsZero = false; break; }
+            if (maskIsZero)
+                continue;
+
+            byte[] broadcastBytes = new byte[4];
+            for (int i = 0; i < 4; i++)
+                broadcastBytes[i] = (byte)(ipBytes[i] | ~maskBytes[i]);
+
+            return new IPAddress(broadcastBytes);
+        }
+
+        return null;
     }
 
     // ---------------- low-level buffer writers ----------------

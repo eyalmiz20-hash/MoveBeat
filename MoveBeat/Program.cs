@@ -48,7 +48,20 @@ class Program
         BuildJointTables();
 
         osc = new OscSender(OscPort, ipOverride);
-        Console.WriteLine("OSC target: " + osc.TargetAddress + ":" + osc.TargetPort);
+        Console.WriteLine("OSC target: " + osc.TargetAddress + ":" + osc.TargetPort + "  (wired Ethernet only)");
+
+        // Hitting the 255.255.255.255 fallback means no usable wired interface
+        // was found - almost always an unplugged or unconfigured LAN cable.
+        // Say so loudly: otherwise the app looks perfectly healthy while
+        // nothing ever reaches the Mac.
+        if (ipOverride == null && osc.TargetAddress.Equals(System.Net.IPAddress.Broadcast))
+        {
+            Console.WriteLine();
+            Console.WriteLine("  WARNING: no wired Ethernet interface found - falling back to 255.255.255.255.");
+            Console.WriteLine("  Check the LAN cable. Wi-Fi is intentionally not used for the OSC stream.");
+            Console.WriteLine("  Override with:  MoveBeat.exe --ip <address>");
+            Console.WriteLine();
+        }
 
         Console.CancelKeyPress += Console_CancelKeyPress;
 

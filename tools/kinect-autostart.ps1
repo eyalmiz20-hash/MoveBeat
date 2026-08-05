@@ -22,9 +22,15 @@ $KinectSdk = 'C:\Program Files\Microsoft SDKs\Kinect\v2.0_1409'
 # one, so they don't all hit the sensor at the same instant.
 $Apps = @(
     @{ Name = 'MoveBeat';       Path = (Join-Path $RepoRoot 'MoveBeat\bin\Debug\net48\MoveBeat.exe');        Stagger = 3 }
-    @{ Name = 'Body Basics';    Path = (Join-Path $KinectSdk 'bin\BodyBasics-D2D.exe');                      Stagger = 3 }
-    @{ Name = 'Kinect Studio';  Path = (Join-Path $KinectSdk 'Tools\KinectStudio\KStudio.exe');              Stagger = 0 }
+    @{ Name = 'Body Basics';    Path = (Join-Path $KinectSdk 'bin\BodyBasics-D2D.exe');                      Stagger = 0 }
 )
+
+# Kinect Studio is deliberately NOT auto-started. It connects to the sensor
+# service and can gate or replace the live feed for every other client -- when
+# it opened here it had a recorded .xef file loaded, which makes "why is my app
+# getting no data" very hard to diagnose. Open it by hand when you actually
+# want to record or play back:
+#   C:\Program Files\Microsoft SDKs\Kinect\v2.0_1409\Tools\KinectStudio\KStudio.exe
 
 $SensorWaitSeconds = 90
 

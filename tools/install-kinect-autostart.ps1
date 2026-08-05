@@ -37,7 +37,9 @@ Write-Host "Installed: $ShortcutPath"
 Write-Host 'At every logon this will wait for the Kinect, then launch:'
 Write-Host '  - MoveBeat.exe      (Kinect -> OSC sender)'
 Write-Host '  - Body Basics       (live skeleton view)'
-Write-Host '  - Kinect Studio     (depth/IR/body recording tool)'
+Write-Host ''
+Write-Host 'Kinect Studio is NOT auto-started - it can gate the live sensor feed'
+Write-Host 'for other apps. Open it manually when you need to record or play back.'
 Write-Host ''
 Write-Host 'To run it right now without logging out:'
 Write-Host "  wscript.exe `"$VbsPath`""
