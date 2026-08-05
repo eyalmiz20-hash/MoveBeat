@@ -33,6 +33,33 @@ if (-not (Test-Path $LogDir)) {
     New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 }
 
+# Runs git and returns its combined output as plain text.
+#
+# Why this exists: in Windows PowerShell 5.1, "2>&1" on a NATIVE command wraps
+# each stderr line in an ErrorRecord, so piping it to Out-String renders a
+# NativeCommandError stack trace into the log - even on complete success,
+# because git writes ordinary progress ("From https://github.com/...") to
+# stderr. That noise would bury the real message on an actual failure.
+# Unwrapping the ErrorRecords here keeps the log readable.
+function Invoke-Git {
+    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$GitArgs)
+
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'SilentlyContinue'
+    try {
+        $raw = & git @GitArgs 2>&1
+        $script:GitExitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $prev
+    }
+
+    $lines = @($raw | ForEach-Object {
+        if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message } else { [string]$_ }
+    })
+    return (($lines -join "`n").Trim())
+}
+
 function Write-Log {
     param([string]$Message)
     $line = '[{0}] {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message
@@ -103,9 +130,13 @@ $consecutiveFailures = 0
 
 while ($true) {
     try {
-        $localSha = ((& git rev-parse HEAD 2>&1) | Out-String).Trim()
-        $remoteLine = ((& git ls-remote origin refs/heads/main 2>&1) | Out-String).Trim()
+        $localSha = Invoke-Git rev-parse HEAD
+        $remoteLine = Invoke-Git ls-remote origin refs/heads/main
         $remoteSha = ($remoteLine -split '\s+')[0]
+
+        if ($localSha.Length -ne 40) {
+            throw "git rev-parse HEAD returned unexpected output: '$localSha'"
+        }
 
         if ([string]::IsNullOrWhiteSpace($remoteSha) -or $remoteSha.Length -ne 40) {
             throw "git ls-remote returned unexpected output: '$remoteLine'"
@@ -137,13 +168,13 @@ while ($true) {
             #    be resolved by accident. No git clean: bin/obj are
             #    gitignored, so reset won't touch them - keep them for fast
             #    incremental builds.
-            $fetchOut = ((& git fetch origin main 2>&1) | Out-String).Trim()
+            $fetchOut = Invoke-Git fetch origin main
             Write-Log ("git fetch: " + $fetchOut)
 
-            $resetOut = ((& git reset --hard origin/main 2>&1) | Out-String).Trim()
+            $resetOut = Invoke-Git reset --hard origin/main
             Write-Log ("git reset: " + $resetOut)
 
-            $newSha = ((& git rev-parse HEAD 2>&1) | Out-String).Trim()
+            $newSha = Invoke-Git rev-parse HEAD
             Write-Log ("Now at {0}." -f $newSha.Substring(0, 7))
 
             # 3. Build - absolute dotnet path (a scheduled task's PATH may
@@ -177,9 +208,9 @@ while ($true) {
                 # script. PowerShell reads the whole file into memory at
                 # launch, so this running instance is unaffected - flag it
                 # clearly instead of silently doing nothing.
-                $toolsChanged = ((& git diff --name-only $localSha $newSha -- tools 2>&1) | Out-String).Trim()
+                $toolsChanged = Invoke-Git diff --name-only $localSha $newSha -- tools
                 if ($toolsChanged.Length -gt 0) {
-                    Write-Log 'NOTE: tools/ changed in this pull - poller script updated. Restart the poller (log off/on, or Stop-ScheduledTask + Start-ScheduledTask) to apply changes.'
+                    Write-Log 'NOTE: tools/ changed in this pull - this poller script was updated on disk, but the running instance still holds the old copy in memory. To apply: log off and back on, or run tools\uninstall-startup.ps1 then relaunch tools\run-hidden.vbs.'
                 }
 
                 $consecutiveFailures = 0
