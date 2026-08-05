@@ -41,9 +41,28 @@ $settings = New-ScheduledTaskSettingsSet `
 # for both reasons - this task only ever runs in the interactive session.
 $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
 
-Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal `
-    -Description 'MoveBeat auto-sync: polls GitHub origin/main every ~30s; on change, kills MoveBeat.exe, mirrors the repo, rebuilds and relaunches.' `
-    | Out-Null
+try {
+    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal `
+        -Description 'MoveBeat auto-sync: polls GitHub origin/main every ~30s; on change, kills MoveBeat.exe, mirrors the repo, rebuilds and relaunches.' `
+        -ErrorAction Stop | Out-Null
+}
+catch {
+    Write-Host ''
+    Write-Host "FAILED to register '$TaskName': $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host ''
+    Write-Host 'Register-ScheduledTask needs administrator rights on this machine.'
+    Write-Host 'Use the no-admin alternative instead:'
+    Write-Host '    .\tools\install-startup.ps1'
+    exit 1
+}
+
+# Never trust the call alone - confirm the task actually exists before
+# reporting success. An earlier version printed "Registered" after an
+# Access Denied failure, which is worse than failing loudly.
+if (-not (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue)) {
+    Write-Host "FAILED: '$TaskName' is not present after registration." -ForegroundColor Red
+    exit 1
+}
 
 Write-Host "Registered scheduled task '$TaskName'."
 Write-Host 'It will start automatically at next logon (after a 30s delay).'

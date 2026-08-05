@@ -16,9 +16,12 @@ else {
 
 # Kill any running poller (a powershell.exe process running sync-loop.ps1,
 # whether started by the task or launched manually for testing).
+# Never match this very process - a shell whose own command line mentions the
+# script name would otherwise kill itself.
+$pattern = '*' + 'sync-loop' + '.ps1*'
 $killed = 0
 Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" -ErrorAction SilentlyContinue | ForEach-Object {
-    if ($_.CommandLine -and $_.CommandLine -like '*sync-loop.ps1*') {
+    if ($_.ProcessId -ne $PID -and $_.CommandLine -and $_.CommandLine -like $pattern) {
         Write-Host ("Stopping poller process PID {0}" -f $_.ProcessId)
         Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
         $killed++
