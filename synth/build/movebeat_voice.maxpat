@@ -287,10 +287,10 @@
                     "id": "obj-42",
                     "maxclass": "newobj",
                     "numinlets": 2,
-                    "numoutlets": 2,
-                    "outlettype": [ "", "" ],
-                    "patching_rect": [ 155.81395590305328, 168.2170568704605, 87.0, 22.0 ],
-                    "text": "route velocity"
+                    "numoutlets": 6,
+                    "outlettype": [ "", "", "", "", "", "" ],
+                    "patching_rect": [ 155.81395590305328, 168.2170568704605, 280.0, 22.0 ],
+                    "text": "route velocity cutoff lfoRate lfoDepth filtEnvAmt"
                 }
             },
             {
@@ -458,6 +458,36 @@
                 "patchline": {
                     "destination": [ "obj-10", 0 ],
                     "source": [ "obj-42", 0 ]
+                }
+            },
+            {
+                "patchline": {
+                    "destination": [ "obj-22", 0 ],
+                    "source": [ "obj-42", 1 ]
+                }
+            },
+            {
+                "patchline": {
+                    "destination": [ "obj-19", 0 ],
+                    "source": [ "obj-42", 2 ]
+                }
+            },
+            {
+                "patchline": {
+                    "destination": [ "obj-20", 0 ],
+                    "source": [ "obj-42", 3 ]
+                }
+            },
+            {
+                "patchline": {
+                    "destination": [ "obj-18", 0 ],
+                    "source": [ "obj-42", 4 ]
+                }
+            },
+            {
+                "patchline": {
+                    "destination": [ "obj-14", 0 ],
+                    "source": [ "obj-42", 5 ]
                 }
             },
             {
