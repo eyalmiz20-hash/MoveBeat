@@ -13,27 +13,14 @@ Final thesis project: movement to sound. A Kinect v2 tracks a body; the coordina
 | Ethernet-only targeting | Verified sending from `192.168.0.101` → `192.168.0.255` |
 | Git auto-updater | Verified end to end (pull → build → relaunch) |
 | Logon auto-start | Verified from a cold start |
-| **Skeletal tracking** | **UNRESOLVED — see below** |
-| Max patch (`udpreceive`) | Not built yet — nothing on the Mac receives yet |
+| Skeletal tracking | **Working** — see note below |
+| Max patch (`udpreceive`) | **Receiver built** — `[p mb_udp_in]` in `MoveBeat.maxpat`, verified receiving on the Mac. Mapping subpatch not built yet |
 
-### The open problem: no body is ever tracked
+### Skeletal tracking — resolved (it was distance)
 
-Frames arrive steadily, but **every body slot reports `IsTracked = false`**, across many runs totalling thousands of frames. `/mb/tracked` is therefore always `0` and no joint coordinates are ever sent.
+The long "no body is ever tracked" mystery had nothing to do with software or hardware: **nobody was standing in the sensor's tracking range during the tests.** Kinect v2 needs roughly **2–3 m with the whole body in view** — it will not track someone sitting at the keyboard half a metre away. With a person at proper distance, bodies track and joint coordinates stream normally.
 
-What has been ruled out:
-
-- **Not the hardware.** `Xbox NUI Sensor`, `WDF KinectSensor Interface 0` and `Microphone Array` all report `OK`. The mic array only enumerates when the sensor has full power *and* a real USB 3.0 controller; both Intel xHCI controllers are healthy and no device reports a problem.
-- **Not the sensor stream.** Body frames arrive at ~30 Hz, which is the sensor's native rate, with no exception from `GetDefault()`, `OpenReader()` or `Open()`.
-- **Not the OSC path.** Packets were captured and decoded byte-by-byte; the format is correct.
-
-What has **not** been established: whether a person was actually in the sensor's field of view during any test. This was never confirmed, because verifying it requires someone standing in front of the sensor while the test runs.
-
-**The next diagnostic step is `BodyBasics-D2D.exe`** (Microsoft's own tracker, path below). It is the clean split:
-
-- Body Basics draws a skeleton but `MoveBeat.exe` does not → the bug is in this repo, in `BodyReader_FrameArrived`.
-- Neither draws anything → it is aim, distance or framing, not software. Kinect v2 needs roughly **2–3 m with the whole body in view**; it will not track someone sitting at the keyboard half a metre away.
-
-`DepthBasics-D2D.exe` shows the raw depth image and answers "what is the sensor actually pointed at".
+Keep this in mind for every future "no data" report: check framing/distance *first* (`DepthBasics-D2D.exe` shows what the sensor actually sees), before suspecting code.
 
 ## The two machines — read this first
 
