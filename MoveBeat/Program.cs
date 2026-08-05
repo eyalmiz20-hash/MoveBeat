@@ -23,6 +23,8 @@ class Program
     static string[] jointAddresses; // indexed by (int)JointType, e.g. "/mb/handright"
 
     static readonly Stopwatch redrawStopwatch = Stopwatch.StartNew();
+    static readonly Stopwatch sinceLastFrame = Stopwatch.StartNew();
+    static Timer frameWatchdog;
     static volatile bool running = true;
     static volatile bool shutdownDone;
 
@@ -86,6 +88,12 @@ class Program
             Console.WriteLine("Stand 2-3 m in front of the Kinect, fully in view...");
             Console.WriteLine("Press ENTER to exit (or Ctrl+C)...");
             Console.WriteLine();
+
+            // Watchdog: "no body tracked" and "no frames arriving at all" look
+            // identical on screen, but they are completely different problems.
+            // Say which one it is.
+            frameWatchdog = new Timer(CheckFrameFlow, null, 5000, 5000);
+
             Console.ReadLine();
 
             Shutdown();
@@ -96,6 +104,30 @@ class Program
             Console.ReadLine();
             Shutdown();
         }
+    }
+
+    /// <summary>
+    /// Reports when the sensor stops delivering frames entirely, which is a
+    /// different fault from "a person is not in view" but looks the same.
+    /// The usual cause is a Kinect left in a bad state after a client was
+    /// hard-killed without calling sensor.Close(); the cure is a physical
+    /// unplug/replug of the sensor's USB and power.
+    /// </summary>
+    static void CheckFrameFlow(object state)
+    {
+        if (sensor == null)
+            return;
+
+        double idleSeconds = sinceLastFrame.Elapsed.TotalSeconds;
+        if (idleSeconds < 5)
+            return;
+
+        TrySetCursor(0, AvailabilityRow);
+        WritePadded(string.Format(
+            "NO FRAMES for {0:F0}s. IsOpen={1} IsAvailable={2}",
+            idleSeconds, sensor.IsOpen, sensor.IsAvailable), 70);
+        WritePadded("  -> The sensor is not streaming. Unplug the Kinect USB and its", 70);
+        WritePadded("     power adapter, wait 5s, plug back in, then restart this app.", 70);
     }
 
     static void Sensor_IsAvailableChanged(object sender, IsAvailableChangedEventArgs e)
@@ -181,6 +213,8 @@ class Program
         {
             if (frame == null)
                 return;
+
+            sinceLastFrame.Restart();
 
             if (bodies == null)
                 bodies = new Body[frame.BodyCount];

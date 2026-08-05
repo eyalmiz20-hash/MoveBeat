@@ -154,9 +154,25 @@ while ($true) {
             #    Order is kill -> wait -> build -> relaunch, never build-then-kill.
             $running = Get-Process -Name MoveBeat -ErrorAction SilentlyContinue
             if ($running) {
-                Write-Log 'Stopping running MoveBeat.exe before build...'
-                $running | Stop-Process -Force
-                $running | Wait-Process -Timeout 10 -ErrorAction SilentlyContinue
+                # Ask nicely first. Stop-Process -Force is a hard
+                # TerminateProcess: sensor.Close() never runs, so KinectMonitor
+                # keeps holding the sensor handle. Do that repeatedly and the
+                # sensor ends up reporting IsAvailable=False to every client
+                # until it is physically replugged. CloseMainWindow lets the
+                # app's own shutdown path dispose the reader and close the
+                # sensor properly.
+                Write-Log 'Stopping running MoveBeat.exe before build (graceful first)...'
+                foreach ($proc in @($running)) {
+                    try { [void]$proc.CloseMainWindow() } catch { }
+                }
+                $running | Wait-Process -Timeout 8 -ErrorAction SilentlyContinue
+
+                $stillUp = Get-Process -Name MoveBeat -ErrorAction SilentlyContinue
+                if ($stillUp) {
+                    Write-Log 'Graceful close timed out - forcing.'
+                    $stillUp | Stop-Process -Force
+                    $stillUp | Wait-Process -Timeout 10 -ErrorAction SilentlyContinue
+                }
             }
             # Stop-Process -Force is a hard terminate, so sensor.Close() never
             # runs - KinectMonitor can still hold the sensor handle briefly.
