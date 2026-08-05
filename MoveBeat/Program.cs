@@ -8,6 +8,12 @@ class Program
     const int OscPort = 7400;
     const double ConsoleRedrawIntervalMs = 250; // throttle console redraw to ~4 Hz
 
+    // The live status block redraws in place below the startup banner, so the
+    // banner (OSC target, IsAvailable) stays readable instead of being
+    // overwritten every frame.
+    const int AvailabilityRow = 6;
+    const int StatusTop = 8;
+
     static KinectSensor sensor;
     static BodyFrameReader bodyReader;
     static Body[] bodies;
@@ -67,12 +73,19 @@ class Program
             bodyReader = sensor.BodyFrameSource.OpenReader();
             bodyReader.FrameArrived += BodyReader_FrameArrived;
 
+            // IsAvailable is the useful diagnostic when frames arrive but no
+            // body is ever tracked: the sensor can be open and delivering
+            // empty frames while not actually streaming (USB bandwidth or
+            // power problems). Report it at startup and on every change.
+            sensor.IsAvailableChanged += Sensor_IsAvailableChanged;
+
             sensor.Open();
 
-            Console.WriteLine("Kinect opened");
-            Console.WriteLine("Stand in front of the Kinect...");
+            Console.WriteLine("Kinect opened. IsOpen=" + sensor.IsOpen + " IsAvailable=" + sensor.IsAvailable);
+            Console.WriteLine("(IsAvailable can take a second to become True after opening.)");
+            Console.WriteLine("Stand 2-3 m in front of the Kinect, fully in view...");
             Console.WriteLine("Press ENTER to exit (or Ctrl+C)...");
-            Console.Clear();
+            Console.WriteLine();
             Console.ReadLine();
 
             Shutdown();
@@ -83,6 +96,12 @@ class Program
             Console.ReadLine();
             Shutdown();
         }
+    }
+
+    static void Sensor_IsAvailableChanged(object sender, IsAvailableChangedEventArgs e)
+    {
+        TrySetCursor(0, AvailabilityRow);
+        WritePadded("Sensor IsAvailable -> " + e.IsAvailable, 60);
     }
 
     static void Console_CancelKeyPress(object sender, ConsoleCancelEventArgs e)
@@ -217,7 +236,7 @@ class Program
             return;
         redrawStopwatch.Restart();
 
-        TrySetCursor(0, 0);
+        TrySetCursor(0, StatusTop);
         WritePadded("No body tracked", 60);
         for (int i = 0; i < 4; i++)
             WritePadded(string.Empty, 60);
@@ -234,7 +253,7 @@ class Program
         var handLeft = body.Joints[JointType.HandLeft].Position;
         var spineBase = body.Joints[JointType.SpineBase].Position;
 
-        TrySetCursor(0, 0);
+        TrySetCursor(0, StatusTop);
         WritePadded("Body tracked!", 60);
         WritePadded(string.Format("Head      : X={0:F3} Y={1:F3} Z={2:F3}", head.X, head.Y, head.Z), 60);
         WritePadded(string.Format("HandRight : X={0:F3} Y={1:F3} Z={2:F3}", handRight.X, handRight.Y, handRight.Z), 60);
