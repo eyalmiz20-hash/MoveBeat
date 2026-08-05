@@ -76,6 +76,17 @@ class OscSender : IDisposable
                         continue;
 
                     byte[] ipBytes = ua.Address.GetAddressBytes();
+
+                    // Skip APIPA / link-local (169.254.0.0/16). This machine
+                    // reports several of them (Bluetooth PAN, virtual
+                    // adapters) alongside the real Wi-Fi address, and they can
+                    // enumerate first. Broadcasting to a link-local subnet
+                    // reaches nothing, and the failure is silent and
+                    // maddening: the app looks healthy while Max receives
+                    // nothing at all.
+                    if (ipBytes[0] == 169 && ipBytes[1] == 254)
+                        continue;
+
                     byte[] maskBytes = ua.IPv4Mask.GetAddressBytes();
 
                     // All-zero mask means "no mask configured" - not usable.
