@@ -2,6 +2,39 @@
 
 Final thesis project: movement to sound. A Kinect v2 tracks a body; the coordinates drive a virtual-analog synthesizer.
 
+## Current status (as of 2026-08-05)
+
+| Piece | State |
+|---|---|
+| Repo moved out of OneDrive to `C:\dev\MoveBeat` | Done |
+| Build via `dotnet` | Working, green |
+| OSC encoder | **Verified byte-exact** against a captured packet (1144/1144 bytes consumed) |
+| Kinect capture | Sensor opens, frames arrive at ~26–32 Hz |
+| Ethernet-only targeting | Verified sending from `192.168.0.101` → `192.168.0.255` |
+| Git auto-updater | Verified end to end (pull → build → relaunch) |
+| Logon auto-start | Verified from a cold start |
+| **Skeletal tracking** | **UNRESOLVED — see below** |
+| Max patch (`udpreceive`) | Not built yet — nothing on the Mac receives yet |
+
+### The open problem: no body is ever tracked
+
+Frames arrive steadily, but **every body slot reports `IsTracked = false`**, across many runs totalling thousands of frames. `/mb/tracked` is therefore always `0` and no joint coordinates are ever sent.
+
+What has been ruled out:
+
+- **Not the hardware.** `Xbox NUI Sensor`, `WDF KinectSensor Interface 0` and `Microphone Array` all report `OK`. The mic array only enumerates when the sensor has full power *and* a real USB 3.0 controller; both Intel xHCI controllers are healthy and no device reports a problem.
+- **Not the sensor stream.** Body frames arrive at ~30 Hz, which is the sensor's native rate, with no exception from `GetDefault()`, `OpenReader()` or `Open()`.
+- **Not the OSC path.** Packets were captured and decoded byte-by-byte; the format is correct.
+
+What has **not** been established: whether a person was actually in the sensor's field of view during any test. This was never confirmed, because verifying it requires someone standing in front of the sensor while the test runs.
+
+**The next diagnostic step is `BodyBasics-D2D.exe`** (Microsoft's own tracker, path below). It is the clean split:
+
+- Body Basics draws a skeleton but `MoveBeat.exe` does not → the bug is in this repo, in `BodyReader_FrameArrived`.
+- Neither draws anything → it is aim, distance or framing, not software. Kinect v2 needs roughly **2–3 m with the whole body in view**; it will not track someone sitting at the keyboard half a metre away.
+
+`DepthBasics-D2D.exe` shows the raw depth image and answers "what is the sensor actually pointed at".
+
 ## The two machines — read this first
 
 This project runs across two computers, and **which machine you are on changes what you should do.**
@@ -60,10 +93,22 @@ Packet is ~1144 bytes, safely under the 1472-byte non-fragmenting UDP limit. **I
 
 **This is a cross-machine contract.** Changing an address or type tag silently breaks the Max patch on the other computer, with no compile error anywhere. Treat it as an API.
 
-Broadcast means no IP configuration. Both machines must be on the same subnet. `--ip <addr>` overrides it if broadcast is ever blocked.
+### Wired Ethernet only — deliberate
+
+The PC sits on two routable subnets at once: **Ethernet `192.168.0.x`** and **Wi-Fi `192.168.8.x`**. `ResolveBroadcastAddress()` accepts **only wired Ethernet** interfaces and ignores Wi-Fi entirely, so the destination is deterministic. The LAN cable is the lower-latency, non-contended path, which matters for a 30 Hz control stream driving a synth.
+
+**The Mac must be on the `192.168.0.x` LAN**, not Wi-Fi, or it receives nothing.
+
+Link-local/APIPA addresses (`169.254.0.0/16`) are skipped — this machine reports three of them from Bluetooth and virtual adapters, and an unplugged Ethernet port self-assigns one too. Falling through to `255.255.255.255` means no usable wired interface was found; the app prints a loud warning in that case rather than appearing healthy while streaming nowhere. `--ip <addr>` overrides everything.
 
 ### Testing without hardware
 `MoveBeat.exe --test` streams synthetic sine-wave joint data for all 25 joints, so the network path can be verified with no Kinect attached. Use it to separate "is my OSC correct" from "is the Kinect working".
+
+### ⚠️ Testing trap: never redirect this app's stdout
+
+`Start-Process -RedirectStandardOutput` leaves **stdin as the null device**, so `Console.ReadLine()` returns instantly and the app **exits within milliseconds** — long before the sensor finishes coming up. This produces a completely false reading: `IsAvailable=False`, no frames, no status lines. It cost a whole debugging detour that concluded the sensor was wedged when it was fine.
+
+**To observe the app's behaviour, capture its UDP output instead** — bind a socket to port 7400 and decode the packets. That measures the real thing and disturbs nothing.
 
 ## The auto-updater — and its one sharp edge
 
@@ -79,20 +124,41 @@ Other files: `run-hidden.vbs` launches the poller with no console flash (`-Windo
 
 ## Kinect app auto-start
 
-`tools/kinect-autostart.ps1` launches `MoveBeat.exe`, Body Basics (Microsoft's live skeleton viewer) and Kinect Studio at every logon. Installed by `install-kinect-autostart.ps1` as a second Startup-folder shortcut, independent of the auto-updater. Which apps start is the `$Apps` list at the top of the script — change it on the Mac and the auto-updater delivers it.
+`tools/kinect-autostart.ps1` launches `MoveBeat.exe` and Body Basics (Microsoft's live skeleton viewer) at every logon. Installed by `install-kinect-autostart.ps1` as a second Startup-folder shortcut, independent of the auto-updater. Which apps start is the `$Apps` list at the top of the script — change it on the Mac and the auto-updater delivers it.
 
 **It waits for the sensor before launching anything.** At logon `KinectMonitor` is still starting and the sensor is still enumerating on USB; anything launched immediately loses that race and reports "Kinect not found". Keep that wait if you modify the script.
 
+**Kinect Studio is deliberately NOT auto-started.** It connects to the sensor service and can gate or replace the live feed for every other client — when it did auto-start here it had a recorded `.xef` file loaded, which makes "why is my app getting no data" needlessly hard to diagnose. Open it by hand when recording or playback is actually wanted.
+
 Logs to `tools/logs/kinect-autostart.log`.
 
-### Diagnosing "no body tracked"
+## Kinect SDK diagnostic apps
 
-Frames arriving at ~30 Hz with `IsTracked = false` on every body slot is ambiguous — it looks identical whether nobody is in frame or the sensor is open but not really streaming. Two things resolve it:
+Under `C:\Program Files\Microsoft SDKs\Kinect\v2.0_1409\`:
 
-- `MoveBeat.exe` prints `IsOpen`/`IsAvailable` at startup and logs every `IsAvailableChanged`. **`IsAvailable = False` while frames arrive means a USB bandwidth or power problem**, not a positioning one.
-- **Body Basics** (`SDK bin\BodyBasics-D2D.exe`) is Microsoft's own tracker. If it draws a skeleton and MoveBeat doesn't, the bug is in this repo; if neither does, it's the sensor, the framing, or the USB path.
+| App | Use |
+|---|---|
+| `bin\BodyBasics-D2D.exe` | Microsoft's skeleton tracker. **The reference implementation** — if it tracks and this repo doesn't, the bug is here. |
+| `bin\DepthBasics-D2D.exe` | Raw depth image — shows what the sensor is actually pointed at. |
+| `bin\InfraredBasics-D2D.exe` | Raw IR image. |
+| `Tools\ConfigurationVerifier\KinectV2ConfigurationVerifier.exe` | USB bandwidth / controller compatibility checks. |
+| `Tools\KinectStudio\KStudio.exe` | Record/playback. Can gate the live feed — open deliberately, close when done. |
 
-Kinect v2 multiplexes through the KinectMonitor service, so several apps can read the sensor simultaneously — Body Basics and MoveBeat.exe coexist fine.
+Kinect v2 multiplexes through the KinectMonitor service, so several apps can read the sensor simultaneously — Body Basics and `MoveBeat.exe` coexist fine.
+
+### Sensor diagnostics built into the app
+
+- `MoveBeat.exe` prints `IsOpen`/`IsAvailable` at startup and logs every `IsAvailableChanged` transition.
+- A **frame watchdog** reports `NO FRAMES for Ns` after 5 seconds of silence. This distinguishes the two faults that look identical on screen: "nobody is in view" versus "the sensor is not streaming at all".
+- **Read those values from the app's own visible window, not from redirected output** — see the testing trap above.
+
+### Never hard-kill the app
+
+`Stop-Process -Force` is a hard `TerminateProcess`: `sensor.Close()` never runs, so KinectMonitor keeps holding the sensor handle. Doing this repeatedly can leave the sensor unusable until it is physically replugged. `sync-loop.ps1` calls `CloseMainWindow()` first and only forces after an 8s timeout — keep that behaviour.
+
+### The KinectMonitor service cannot be restarted here
+
+`Restart-Service KinectMonitor` fails without admin. The per-session `KinectService` and `KStudioHostService` processes *can* be killed by this user and respawn on demand, but doing so did not clear a stuck sensor. Physical replug (USB **and** power adapter) is the real recovery.
 
 When relaunching the app from a hidden parent, use `Start-Process` **without** `-NoNewWindow` — otherwise the child inherits the hidden console, all output vanishes, and `Console.SetCursorPosition` throws.
 
@@ -100,13 +166,27 @@ When relaunching the app from a hidden parent, use `Start-Process` **without** `
 
 ```
 MoveBeat/          C# Kinect capture app (Windows)
-  Program.cs         frame handler, console status, --test mode
-  OscSender.cs       OSC encoder + UDP broadcast
+  Program.cs         frame handler, console status, watchdog, --test mode
+  OscSender.cs       OSC encoder + wired-Ethernet UDP broadcast
 synth/             Max 9 synth (Mac)
   dsp/*.genexpr      gen~ core: oscillators, drive, Moog ladder filter
   docs/              ARCHITECTURE.md — parameter list and design rationale
   build/             .maxpat patchers
-tools/             auto-updater scripts (Windows)
+tools/             Windows automation
+  sync-loop.ps1              git poller: pull, build, relaunch
+  run-hidden.vbs             no-flash launcher for the poller
+  install-startup.ps1        installs the poller at logon (no admin)
+  uninstall-startup.ps1
+  kinect-autostart.ps1       waits for the sensor, launches the Kinect apps
+  run-kinect-autostart.vbs   no-flash launcher for the above
+  install-kinect-autostart.ps1
+  uninstall-kinect-autostart.ps1
+  install-task.ps1           Task Scheduler variant — REQUIRES ADMIN, fails here
+  uninstall-task.ps1
+  logs/                      sync.log, kinect-autostart.log (gitignored)
 ```
+
+Two Startup-folder shortcuts are installed, independent of each other:
+`MoveBeatAutoUpdate.lnk` (git poller) and `MoveBeatKinectApps.lnk` (Kinect apps).
 
 `synth/docs/ARCHITECTURE.md` is the reference for the synth's parameter names (`cutoff`, `resonance`, `drive`, `pw`, `outgain`…) and the suggested movement→parameter mappings. Read it before touching anything in `synth/`.
