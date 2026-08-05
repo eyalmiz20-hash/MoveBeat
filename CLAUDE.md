@@ -75,7 +75,24 @@ Broadcast means no IP configuration. Both machines must be on the same subnet. `
 >
 > **If you edit code on the Windows machine, commit and push it before anything lands on `origin/main`.** Don't leave work sitting uncommitted here.
 
-Other files: `run-hidden.vbs` launches the poller with no console flash (`-WindowStyle Hidden` still flashes; `WScript.Shell.Run …, 0` doesn't). `install-task.ps1` / `uninstall-task.ps1` manage the scheduled task — **note `install-task.ps1` currently requires admin and fails without it.**
+Other files: `run-hidden.vbs` launches the poller with no console flash (`-WindowStyle Hidden` still flashes; `WScript.Shell.Run …, 0` doesn't). `install-task.ps1` / `uninstall-task.ps1` manage the scheduled task — **note `install-task.ps1` requires admin and fails without it.** Use `install-startup.ps1` instead.
+
+## Kinect app auto-start
+
+`tools/kinect-autostart.ps1` launches `MoveBeat.exe`, Body Basics (Microsoft's live skeleton viewer) and Kinect Studio at every logon. Installed by `install-kinect-autostart.ps1` as a second Startup-folder shortcut, independent of the auto-updater. Which apps start is the `$Apps` list at the top of the script — change it on the Mac and the auto-updater delivers it.
+
+**It waits for the sensor before launching anything.** At logon `KinectMonitor` is still starting and the sensor is still enumerating on USB; anything launched immediately loses that race and reports "Kinect not found". Keep that wait if you modify the script.
+
+Logs to `tools/logs/kinect-autostart.log`.
+
+### Diagnosing "no body tracked"
+
+Frames arriving at ~30 Hz with `IsTracked = false` on every body slot is ambiguous — it looks identical whether nobody is in frame or the sensor is open but not really streaming. Two things resolve it:
+
+- `MoveBeat.exe` prints `IsOpen`/`IsAvailable` at startup and logs every `IsAvailableChanged`. **`IsAvailable = False` while frames arrive means a USB bandwidth or power problem**, not a positioning one.
+- **Body Basics** (`SDK bin\BodyBasics-D2D.exe`) is Microsoft's own tracker. If it draws a skeleton and MoveBeat doesn't, the bug is in this repo; if neither does, it's the sensor, the framing, or the USB path.
+
+Kinect v2 multiplexes through the KinectMonitor service, so several apps can read the sensor simultaneously — Body Basics and MoveBeat.exe coexist fine.
 
 When relaunching the app from a hidden parent, use `Start-Process` **without** `-NoNewWindow` — otherwise the child inherits the hidden console, all output vanishes, and `Console.SetCursorPosition` throws.
 
