@@ -1,0 +1,147 @@
+/* ============================================================
+   MoveBeat Synth  —  Audio Core  (oscillators -> drive -> filter)
+   ------------------------------------------------------------
+   gen~ codebox. This is the complete per-voice audio engine:
+   two anti-aliased oscillators + a sub oscillator, mixed, driven,
+   and fed through the Moog ladder filter (same DSP as
+   moog_ladder.genexpr). Amp/filter envelopes, LFO, glide and
+   voice allocation are done around this in RNBO (see build guide).
+
+   Anti-aliasing: saw and square use polyBLEP band-limiting, so the
+   synth stays clean up high instead of aliasing like a naive
+   digital oscillator. This is what makes it sound like an analog
+   synth rather than a buzzy digital one.
+
+   ---- SIGNAL inlet ----
+     in1 = pitch, in Hz  (already glide-smoothed outside; e.g. mtof)
+     in2 = filter cutoff modulation, in Hz (from filter-envelope+LFO,
+           already summed outside). If not patched, `cutoff` Param is used.
+
+   ---- control PARAMS (surface automatically in RNBO / [gen~]) ----
+   set from Max with messages like:  osc1wave 0 ,  detune 7. , etc.
+   ============================================================ */
+
+// ---------- oscillator params ----------
+Param osc1wave(0.);      // 0 saw | 1 square | 2 triangle | 3 sine
+Param osc2wave(0.);      // 0 saw | 1 square | 2 triangle | 3 sine
+Param osc1level(0.8);    // 0..1
+Param osc2level(0.6);    // 0..1
+Param sublevel(0.4);     // 0..1  (square, one octave below osc1)
+Param detune(0.);        // osc2 detune in semitones (-24..+24)
+Param pw(0.5);           // pulse width for square waves (0.05..0.95)
+
+// ---------- filter params (mirror of moog_ladder) ----------
+Param cutoff(1200., min=20, max=18000);  // used if in2 is 0/unpatched
+Param resonance(0.6, min=0, max=4);
+Param drive(0., min=0, max=1);
+Param rescomp(0., min=0, max=1);          // resonance make-up gain
+
+// ---------- output ----------
+Param outgain(0.5, min=0, max=1);
+
+// ---------- ALL state declared up front (gen~ requires this) ----------
+History p1(0.), p2(0.), psub(0.);            // three oscillator phase accumulators [0,1)
+History s1(0.), s2(0.), s3(0.), s4(0.), y4z(0.);  // filter states + feedback tap
+
+// ============================================================
+//  OSCILLATORS
+// ============================================================
+
+f1  = clamp(in1, 0.001, 18000.);        // osc1 frequency
+f2  = f1 * pow(2., detune / 12.);       // osc2 detuned
+fs2 = f1 * 0.5;                         // sub = one octave down
+
+dt1 = f1  / samplerate;                 // phase increments
+dt2 = f2  / samplerate;
+dts = fs2 / samplerate;
+
+// advance + wrap phases
+p1   = p1   + dt1;   p1   = p1   - floor(p1);
+p2   = p2   + dt2;   p2   = p2   - floor(p2);
+psub = psub + dts;   psub = psub - floor(psub);
+
+// ---- osc1 ----
+// naive shapes
+saw1 = 2. * p1 - 1.;
+// polyBLEP correction for saw at the 0/1 discontinuity
+bl = 0.;
+if (p1 < dt1)        { tt = p1 / dt1;        bl = tt + tt - tt*tt - 1.; }
+else if (p1 > 1.-dt1){ tt = (p1 - 1.) / dt1; bl = tt*tt + tt + tt + 1.; }
+saw1 = saw1 - bl;
+// square from two blep edges (rising at 0, falling at pw)
+sq1 = (p1 < pw) ? 1. : -1.;
+bl = 0.;
+if (p1 < dt1)        { tt = p1 / dt1;        bl = tt + tt - tt*tt - 1.; }
+else if (p1 > 1.-dt1){ tt = (p1 - 1.) / dt1; bl = tt*tt + tt + tt + 1.; }
+sq1 = sq1 + bl;
+pp = p1 - pw; pp = pp - floor(pp);      // phase relative to the falling edge
+bl = 0.;
+if (pp < dt1)        { tt = pp / dt1;        bl = tt + tt - tt*tt - 1.; }
+else if (pp > 1.-dt1){ tt = (pp - 1.) / dt1; bl = tt*tt + tt + tt + 1.; }
+sq1 = sq1 - bl;
+tri1 = 4. * abs(p1 - 0.5) - 1.;         // naive triangle (low aliasing)
+sin1 = sin(2. * PI * p1);
+// select osc1 waveform
+o1 = (osc1wave < 0.5) ? saw1 : (osc1wave < 1.5) ? sq1 : (osc1wave < 2.5) ? tri1 : sin1;
+
+// ---- osc2 ----
+saw2 = 2. * p2 - 1.;
+bl = 0.;
+if (p2 < dt2)        { tt = p2 / dt2;        bl = tt + tt - tt*tt - 1.; }
+else if (p2 > 1.-dt2){ tt = (p2 - 1.) / dt2; bl = tt*tt + tt + tt + 1.; }
+saw2 = saw2 - bl;
+sq2 = (p2 < pw) ? 1. : -1.;
+bl = 0.;
+if (p2 < dt2)        { tt = p2 / dt2;        bl = tt + tt - tt*tt - 1.; }
+else if (p2 > 1.-dt2){ tt = (p2 - 1.) / dt2; bl = tt*tt + tt + tt + 1.; }
+sq2 = sq2 + bl;
+pp = p2 - pw; pp = pp - floor(pp);
+bl = 0.;
+if (pp < dt2)        { tt = pp / dt2;        bl = tt + tt - tt*tt - 1.; }
+else if (pp > 1.-dt2){ tt = (pp - 1.) / dt2; bl = tt*tt + tt + tt + 1.; }
+sq2 = sq2 - bl;
+tri2 = 4. * abs(p2 - 0.5) - 1.;
+sin2 = sin(2. * PI * p2);
+o2 = (osc2wave < 0.5) ? saw2 : (osc2wave < 1.5) ? sq2 : (osc2wave < 2.5) ? tri2 : sin2;
+
+// ---- sub oscillator (square, one octave down) ----
+sub = (psub < 0.5) ? 1. : -1.;
+bl = 0.;
+if (psub < dts)        { tt = psub / dts;        bl = tt + tt - tt*tt - 1.; }
+else if (psub > 1.-dts){ tt = (psub - 1.) / dts; bl = tt*tt + tt + tt + 1.; }
+sub = sub + bl;
+pp = psub - 0.5; pp = pp - floor(pp);
+bl = 0.;
+if (pp < dts)        { tt = pp / dts;        bl = tt + tt - tt*tt - 1.; }
+else if (pp > 1.-dts){ tt = (pp - 1.) / dts; bl = tt*tt + tt + tt + 1.; }
+sub = sub - bl;
+
+// ---- oscillator mix ----
+mix = o1 * osc1level + o2 * osc2level + sub * sublevel;
+mix = mix * 0.5;   // headroom before the filter
+
+// ============================================================
+//  MOOG LADDER FILTER  (identical DSP to moog_ladder.genexpr)
+//  (states s1..s4, y4z are declared at the top of the file)
+// ============================================================
+// cutoff: use the summed modulation signal on in2 if patched, else Param
+fcin = (in2 > 0.) ? in2 : cutoff;
+Fc   = clamp(fcin, 20., 18000.);
+k    = clamp(resonance, 0., 4.);
+dr   = clamp(drive, 0., 1.);
+cmp  = clamp(rescomp, 0., 1.);
+
+wc = tan(PI * Fc / samplerate);
+G  = wc / (1. + wc);
+
+x  = mix * (1. + 3. * dr);
+mkg = 1. + cmp * k * 0.5;
+U  = tanh(x * mkg - k * y4z);
+
+v1 = (U  - s1) * G;   yy1 = v1 + s1;   s1 = yy1 + v1;
+v2 = (yy1 - s2) * G;  yy2 = v2 + s2;   s2 = yy2 + v2;
+v3 = (yy2 - s3) * G;  yy3 = v3 + s3;   s3 = yy3 + v3;
+v4 = (yy3 - s4) * G;  yy4 = v4 + s4;   s4 = yy4 + v4;
+y4z = yy4;
+
+out1 = yy4 * outgain;

@@ -1,0 +1,73 @@
+/* ============================================================
+   MoveBeat Synth  —  Moog Ladder Filter (Zero-Delay Feedback)
+   ------------------------------------------------------------
+   gen~ codebox.  Paste this into a [codebox] inside a [gen~]
+   object (or load as moog_ladder.genexpr via [gen~ moog_ladder]).
+
+   This is the DSP heart of the synth. It is a virtual-analog
+   emulation of the Moog transistor-ladder filter: four one-pole
+   low-pass stages in series (4-pole = 24 dB/octave) with a single
+   nonlinear feedback loop around the whole chain that produces the
+   resonance and, at maximum, self-oscillation.
+
+   Every formula below was verified against Zavalishin's
+   "The Art of VA Filter Design" (ZDF/TPT one-pole), Huovilainen's
+   transistor-ladder model, and the Csound/Pirkle reference code.
+
+   -------- one-pole ZDF (TPT) stage, per the derivation --------
+     g = tan(pi * Fc / Fs)      // bilinear pre-warp of the cutoff
+     G = g / (1 + g)            // stage coefficient (the "G" from ch.3)
+     v = G * (x - s)            // how far the state moves this sample
+     y = v + s                  // stage output (low-pass)
+     s = y + v                  // trapezoidal state update  (verified)
+
+   -------- resonance (the ladder feedback) --------
+     U = tanh(x - k * y4)       // subtract feedback, then saturate
+     k : 0 .. 4                 // 4 = self-oscillation
+   The minus sign inverts the feedback; combined with the 4x45=180
+   phase of the poles it returns in phase at Fc -> resonant boost.
+   tanh models the transistor pair: small signals pass ~linear,
+   large signals compress toward +/-1 (analog warmth, no blow-up).
+   ============================================================ */
+
+// ---- inlets -------------------------------------------------
+//  in1 = audio in (x)
+//  in2 = cutoff frequency Fc in Hz          (20 .. 18000)
+//  in3 = resonance k                        (0 .. 4)
+//  in4 = input drive / overdrive amount     (0 .. 1, 0 = clean)
+//  in5 = resonance make-up gain compensation(0 = off, 1 = full)
+
+// ---- state (one sample of memory each) ----------------------
+History s1(0.), s2(0.), s3(0.), s4(0.);   // the four integrator states
+History y4z(0.);                          // last stage-4 output (feedback tap)
+
+// ---- read + condition the control inputs --------------------
+Fc    = clamp(in2, 20., 18000.);
+k     = clamp(in3, 0., 4.);
+drive = clamp(in4, 0., 1.);
+comp  = clamp(in5, 0., 1.);
+
+// ---- cutoff coefficient (pre-warped bilinear) ---------------
+wc = tan(PI * Fc / samplerate);   // pre-warp so Fc is exact up to Nyquist
+G  = wc / (1. + wc);              // shared one-pole coefficient
+
+// ---- input drive + ladder feedback + saturation -------------
+// extra pre-gain before the filter for a hotter, more saturated tone
+x  = in1 * (1. + 3. * drive);
+// make-up gain: as k rises the passband drops; optionally restore it
+mk = 1. + comp * k * 0.5;
+// combined feedback node, saturated as one signal (Huovilainen form)
+U  = tanh(x * mk - k * y4z);
+
+// ---- four cascaded ZDF one-pole low-pass stages -------------
+v1 = (U  - s1) * G;   y1 = v1 + s1;   s1 = y1 + v1;
+v2 = (y1 - s2) * G;   y2 = v2 + s2;   s2 = y2 + v2;
+v3 = (y2 - s3) * G;   y3 = v3 + s3;   s3 = y3 + v3;
+v4 = (y3 - s4) * G;   y4 = v4 + s4;   s4 = y4 + v4;
+
+// ---- store stage-4 output for next sample's feedback --------
+y4z = y4;
+
+// ---- outputs ------------------------------------------------
+out1 = y4;   // 24 dB/oct low-pass (the Moog voice)
+out2 = y2;   // 12 dB/oct tap (bonus: gentler slope, optional use)
