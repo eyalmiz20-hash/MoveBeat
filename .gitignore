@@ -3,3 +3,6 @@
 # .NET build output
 [Bb]in/
 [Oo]bj/
+
+# auto-updater logs
+tools/logs/
