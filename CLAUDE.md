@@ -2,7 +2,7 @@
 
 Final thesis project: movement to sound. A Kinect v2 tracks a body; the coordinates drive a virtual-analog synthesizer.
 
-## Current status (as of 2026-08-05)
+## Current status (as of 2026-08-08)
 
 | Piece | State |
 |---|---|
@@ -14,7 +14,11 @@ Final thesis project: movement to sound. A Kinect v2 tracks a body; the coordina
 | Git auto-updater | Verified end to end (pull → build → relaunch) |
 | Logon auto-start | Verified from a cold start |
 | Skeletal tracking | **Working** — see note below |
-| Max patch (`udpreceive`) | **Receiver built** — `[p mb_udp_in]` in `MoveBeat.maxpat`, verified receiving on the Mac. Mapping subpatch not built yet |
+| Max side split into two devices | **Done** — synth device + controller device, see below |
+| Synth device | **Working on macOS standalone.** Plays from MIDI/keyboard with no camera; all 24 parameters on a panel |
+| Controller device | **Working.** Both input paths verified on the Mac: live Kinect OSC, and a built-in mock body |
+| Movement → sound mapping | **Working end to end**, verified by UDP capture. Four features live |
+| Verified on the real PC + Kinect | **Not yet** — the last open step |
 
 ### Skeletal tracking — resolved (it was distance)
 
@@ -36,6 +40,48 @@ This project runs across two computers, and **which machine you are on changes w
 **Governing design rule: the weak machine does as little as possible.** The PC reads joints, encodes them, and sends one UDP packet per frame. That is all. It performs **no** mapping, smoothing, filtering, or scaling. Every musical decision happens on the Mac, in Max.
 
 This is not just about CPU. It means the movement→sound mapping can be re-tuned live in Max, while sound is playing, forever — without rebuilding or touching the PC. **If you find yourself adding per-frame computation to the C# side, you are on the wrong machine.**
+
+## The Max side is two devices (2026-08-08)
+
+The Max side used to be one patch with the camera wired straight into the engine. It is now **two independent devices that talk over OSC**, so the instrument and the movement layer can be developed, tested and replaced separately.
+
+| Device | File | Role |
+|---|---|---|
+| **Synth** | `synth/instrument/MoveBeatSynth.maxpat` | The instrument. MIDI/keyboard in, audio out. **No camera code of any kind.** Runs on macOS alone. |
+| **Controller** | `synth/controller/MoveBeatController.maxpat` | Movement in, normalised 0–1 features out. Reads the Kinect stream, or its own mock body. |
+
+`synth/instrument/mb_voice.maxpat` is the third file — one `poly~` voice. It is only separate because `poly~` requires its voice patcher to be its own file; it is never opened directly.
+
+**`synth/docs/MAPPING.md` is the reference for everything mapping-related.** Read it before changing any movement→sound behaviour.
+
+### Why this split, given there was never a Windows-only Max object
+
+Worth recording, because it is a natural assumption and it is wrong: **the Max patches contain no Windows-only objects and never did.** There is no `dp.kinect2`, no `jit.*`, nothing platform-specific. The Kinect is read by the C# app on the PC; the Max side has always been stock `udpreceive` + `route`, which loads fine on macOS.
+
+So the split is **not** a platform-compatibility fix. It buys three things:
+
+1. The synth can be developed and played on the Mac with no camera, no PC and no network.
+2. The mapping can be tested against a mock body that behaves identically to a real one.
+3. Any controller speaking the protocol can drive the synth — which is what makes the planned MoveNet/webcam controller a drop-in addition rather than a rewrite.
+
+### The controller sends fractions, not Hz
+
+The controller reports *how high the hand is*, as a number between 0 and 1. The synth decides that this means 179 Hz or 4.4 kHz. **Parameter ranges are a property of the instrument, so they live in the instrument.**
+
+This is why tuning is deliberately split across two places, and knowing which is which saves a lot of hunting:
+
+- **How much movement counts as "full"** → the controller, in `[p mb_features]`. These are the `[scale]` objects.
+- **What a 0–1 value means in Hz** → the synth, in `[p mb_ctrl_in]`.
+
+### Testing on the Mac with no camera
+
+`MoveBeatController.maxpat` has an input-source menu at the top left: **LIVE** (real Kinect on port 7400) or **MOCK**. Mock gives five sliders for manual poses plus an auto-motion generator that emits complete joint messages at the Kinect's real ~30 Hz.
+
+The mock is built to be trustworthy, not merely convenient: it emits exactly **one message per joint per frame**, the same shape and rate as the PC. Both paths were measured and produce **identical feature ranges** (cutoff 0.1333–0.8667, resonance 0.0714–0.7857). A mock that behaves differently from the thing it stands in for is worse than no mock.
+
+### The original patch is still there
+
+`synth/build/` holds the pre-split single-patch version. It works, it is deliberately untouched, and the two share no files — so both can be run and compared. **Do not delete it until the split version is confirmed on the PC with a real Kinect.**
 
 ## Repo location (Windows)
 
@@ -61,7 +107,9 @@ There is an old copy at `C:\Users\elad1\OneDrive\Desktop\MoveBeat`. It is **dead
 - **This account is not an administrator.** `Register-ScheduledTask` fails with Access Denied. Installing SDKs needs a UAC prompt.
 - **It's a laptop with a battery.** Anything registered in Task Scheduler must set `-AllowStartIfOnBatteries -DontStopIfGoingOnBatteries`, or it silently dies when unplugged.
 
-## The OSC contract
+## The OSC contract, hop 1: PC → Mac (port 7400)
+
+There are now **two** OSC contracts in this project. This is the first — Kinect to controller, across the LAN. The second, controller to synth, is below. Both are APIs: an address change breaks the other side silently.
 
 `MoveBeat/OscSender.cs` is a hand-written OSC 1.0 encoder (no library — it writes into one reused buffer with zero allocation per frame, which matters in a 30 Hz hot path on a weak machine).
 
@@ -96,6 +144,64 @@ Link-local/APIPA addresses (`169.254.0.0/16`) are skipped — this machine repor
 `Start-Process -RedirectStandardOutput` leaves **stdin as the null device**, so `Console.ReadLine()` returns instantly and the app **exits within milliseconds** — long before the sensor finishes coming up. This produces a completely false reading: `IsAvailable=False`, no frames, no status lines. It cost a whole debugging detour that concluded the sensor was wedged when it was fine.
 
 **To observe the app's behaviour, capture its UDP output instead** — bind a socket to port 7400 and decode the packets. That measures the real thing and disturbs nothing.
+
+## The OSC contract, hop 2: controller → synth (port 7500, localhost)
+
+Both devices run on the Mac, so this hop never leaves the machine. Five addresses, **each carrying exactly one float in 0.0–1.0**:
+
+| Movement feature | Joints used | OSC address | Synth parameter |
+|---|---|---|---|
+| Right-hand height | `handright.y` | `/movebeat/cutoff` | `cutoff` |
+| Distance between the hands | `handright.x` − `handleft.x` | `/movebeat/resonance` | `resonance` |
+| Torso lean | `spineshoulder.z` − `spinebase.z` | `/movebeat/drive` | `drive` |
+| Right-hand vertical speed | mean \|Δ`handright.y`\| over 8 frames | `/movebeat/outgain` | `outgain` |
+| Body present | `/mb/tracked` | `/movebeat/gate` | indicator only, so far |
+
+Every joint is gated on `trackingState == 2`, so inferred or lost joints never reach the synth — the last good value simply holds.
+
+The synth's ranges, applied in `[p mb_ctrl_in]`: `cutoff` 100–8000 Hz on an **exponential** curve (`100 · 80^x`, so equal hand movement gives equal musical intervals), `resonance` 0–3.5, `drive` and `outgain` 0–1.
+
+`/movebeat/gate` currently only lights an indicator. **Open decision:** when tracking is lost, every parameter freezes at its last value and the synth drones on unchanged. Whether it should mute, fade or freeze is a musical choice, so nothing is wired to it yet.
+
+### Why OSC and not MIDI CC
+
+Worth writing up, because MIDI CC is the obvious first instinct for "controller drives synth".
+
+**The hard reason:** the Kinect and the synth are on two different computers. MIDI does not cross Ethernet without RTP-MIDI, which on Windows means installing a third-party driver — and **this account is not an administrator**. OSC over UDP already works and is byte-verified.
+
+**The soft reason:** standard MIDI CC is 7-bit, 128 steps. Across a 100–8000 Hz exponential cutoff sweep each step is about a 3.6% frequency jump, audible as stepping on a slow sweep even with smoothing. OSC carries a 32-bit float, so the question does not arise. If CC is ever wanted for a hardware controller, add `[ctlin]` alongside `[udpreceive]` and scale by 1/127 — everything downstream already expects 0–1 — and prefer 14-bit CC for `cutoff`.
+
+### Smoothing — two mechanisms, because there are two kinds of parameter
+
+The camera stream is 30 Hz. Sent raw, that steps audibly. The two routes need different fixes:
+
+- **`cutoff` is a signal** inside the voice. The original `[sig~ 800]` jumped at block boundaries; it is now a `[line~]` fed by `[pack 0. 25]`, ramping each value over 25 ms at signal rate.
+- **`resonance`, `drive`, `outgain` are `gen~` Params**, set by message. **`gen~` does not interpolate Param changes** — this is the non-obvious part. They are ramped at control rate in `[p mb_ctrl_in]` with `[pack 0. 25]` → `[line 0. 5]`: a 25 ms ramp emitted every 5 ms.
+
+Measured result: a 30 Hz input becomes a ~151 Hz parameter stream whose largest single step is 0.25% of the observed range.
+
+If `outgain` ever still clicks on a very fast move, the fix is to pin the Param at 1.0 and do the gain with a `[line~]`-driven `[*~]` in the voice — outside `gen~`, leaving the verified DSP core untouched.
+
+## Two Max traps that cost real debugging time
+
+Both were found on 2026-08-08 while building the split, and both are the kind that produce a patch which loads cleanly and looks right.
+
+### Max numbers subpatcher inlets/outlets by X position, not creation order
+
+An `inlet`/`outlet` object's index comes from its **on-screen X coordinate**, not from where it appears in the file or the order it was made. Lay them out in a different left-to-right order than you intend and Max silently renumbers them; the parent then connects to the wrong ones **with no error in the Max console**.
+
+This swapped `cutoff`↔`resonance` and `drive`↔`outgain` inside `[p mb_features]`. Everything loaded, and the values looked entirely plausible — they were simply arriving on the wrong addresses. It was only caught by capturing the device's UDP output and noticing the *ranges* belonged to the wrong parameters.
+
+**When editing `.maxpat` JSON, always check that inlet/outlet order matches ascending X.**
+
+### Verify Max patches by capturing their UDP output
+
+The same rule already stated for the Windows app applies to the Max side, for a different reason: reading a patch does not tell you what it does, and the GUI does not show mis-wiring like the above. Bind a socket to the port, decode, and check the value *ranges* against what the maths predicts.
+
+Two practical notes from doing this:
+
+- **Max restores previously-open patches after a hard kill.** A stale test copy silently re-opened and streamed to the same port alongside the new one, producing an interleaved mess of two value streams that looked like a logic bug. Delete scratch patches, don't just close them.
+- A synthetic Kinect replay is easy and worth having: build the same bundle `OscSender.cs` builds — 25 joints plus `/mb/tracked` — and send it to 7400 at 30 Hz. It comes out at exactly **1144 bytes**, which is a free check that your replay matches the real contract.
 
 ## The auto-updater — and its one sharp edge
 
@@ -155,10 +261,16 @@ When relaunching the app from a hidden parent, use `Start-Process` **without** `
 MoveBeat/          C# Kinect capture app (Windows)
   Program.cs         frame handler, console status, watchdog, --test mode
   OscSender.cs       OSC encoder + wired-Ethernet UDP broadcast
-synth/             Max 9 synth (Mac)
+synth/             Max 9 (Mac) — two devices + shared DSP
+  instrument/        THE SYNTH DEVICE
+    MoveBeatSynth.maxpat     open this to play; no camera code
+    mb_voice.maxpat          one poly~ voice (loaded by name, never opened directly)
+  controller/        THE MOVEMENT DEVICE
+    MoveBeatController.maxpat  live Kinect OSC + mock body + feature mapping
   dsp/*.genexpr      gen~ core: oscillators, drive, Moog ladder filter
   docs/              ARCHITECTURE.md — parameter list and design rationale
-  build/             .maxpat patchers
+                     MAPPING.md     — movement→parameter contract, tuning guide
+  build/             PRE-SPLIT single-patch version. Still works, untouched.
 tools/             Windows automation
   sync-loop.ps1              git poller: pull, build, relaunch
   run-hidden.vbs             no-flash launcher for the poller
@@ -176,4 +288,11 @@ tools/             Windows automation
 Two Startup-folder shortcuts are installed, independent of each other:
 `MoveBeatAutoUpdate.lnk` (git poller) and `MoveBeatKinectApps.lnk` (Kinect apps).
 
-`synth/docs/ARCHITECTURE.md` is the reference for the synth's parameter names (`cutoff`, `resonance`, `drive`, `pw`, `outgain`…) and the suggested movement→parameter mappings. Read it before touching anything in `synth/`.
+`synth/docs/ARCHITECTURE.md` is the reference for the synth's parameter names (`cutoff`, `resonance`, `drive`, `pw`, `outgain`…) and the DSP design rationale. `synth/docs/MAPPING.md` is the reference for the movement→parameter contract and for where to tune what. **Read both before touching anything in `synth/`.**
+
+## Known issues / open decisions
+
+- **Not yet verified on the real PC with a real Kinect.** Everything on the Mac side is measured and working, including a synthetic replay of the PC's exact packet format, but the split has not run against live hardware.
+- **`/movebeat/gate` does nothing but light an indicator.** On loss of tracking the sound freezes and drones. Needs a musical decision — mute, fade, or hold.
+- **`synth/build/MoveBeat_ableton_ves.amxd` is a divergent fork**, not an export: a near-copy of the old patch with `notein`→`midiin` and `plugout~` added, carrying its own drifted parameter state. It also contradicts `ARCHITECTURE.md` and `BUILD_GUIDE.md`, which both state Ableton and Max for Live are deliberately out of scope. Decide whether to delete it or rebuild it properly from the new synth device.
+- **Fixed 2026-08-08:** the old `[p mb_mapping]` had a dangling right-hand-X gate, so `resonance` computed `abs(0 − lefthand.x)` and tracked one hand's distance from centre rather than the spread between the hands. Fixed in the old patch too, not only in the new controller.
