@@ -146,6 +146,25 @@ Camera path (later): Kinect → MoveBeat (C#) → OSC (`/movebeat/cutoff` …) �
 `udpreceive` + CNMAT `OSC-route` in the patch → same parameter messages. No
 change to the engine.
 
+## The two-device split (current structure)
+
+The synth and the camera are now **two separate Max patches** that talk over OSC, rather than
+one patch with the camera wired directly into the engine. `synth/docs/MAPPING.md` is the
+contract between them and the reference for anything mapping-related.
+
+- **`synth/instrument/MoveBeatSynth.maxpat`** — the instrument. MIDI/keyboard in, audio out,
+  every parameter on a panel. Contains no camera code and needs no controller to be playable.
+  Optional control arrives as normalised 0–1 OSC on port 7500.
+- **`synth/controller/MoveBeatController.maxpat`** — movement in, 0–1 features out. Reads the
+  Kinect stream from the PC on port 7400, or its own built-in mock body when no camera is
+  present, and sends `/movebeat/<param>` to the synth.
+
+The controller sends **fractions, not Hz**: the synth owns its own parameter ranges. That is
+what lets a future MoveNet/webcam controller drive this synth without either side changing.
+
+`synth/build/` still holds the original single-patch version. It works and is deliberately
+left in place; nothing in the new structure depends on it, and the two share no files.
+
 ## File layout
 
 ```
@@ -155,12 +174,23 @@ MoveBeat/synth/
     movebeat_core.genexpr   ← full audio engine (osc + drive + filter)  [unchanged]
   docs/
     ARCHITECTURE.md         ← this file
+    MAPPING.md              ← movement → CC/OSC → parameter contract; tuning guide
     verification/           ← Python proof the DSP is correct/stable
-  build/
+  instrument/               ← THE SYNTH DEVICE
+    MoveBeatSynth.maxpat    ← open this to play
+    mb_voice.maxpat         ← one poly~ voice (loaded by name, not opened directly)
+  controller/               ← THE MOVEMENT DEVICE
+    MoveBeatController.maxpat  ← live Kinect OSC + mock body + feature mapping
+  build/                    ← ORIGINAL single-patch version, still working, untouched
     BUILD_GUIDE.md          ← step-by-step: gen~ + poly~ in standalone Max 9
-    MoveBeat.maxpat         ← the main patcher (built in Max 9)
-    movebeat_voice.maxpat   ← the poly~ voice patcher (built in Max 9)
+    MoveBeat.maxpat         ← the original combined patcher
+    movebeat_voice.maxpat   ← the original poly~ voice patcher
 ```
+
+> The voice patcher is deliberately **renamed** in the new device (`mb_voice` rather than
+> `movebeat_voice`). `poly~` resolves voice patchers by name through Max's search path, so
+> reusing the old name would have made every edit to the new voice silently change the old
+> patch too — and two files with the same basename in one search path are ambiguous to Max.
 
 > Note: an earlier `build/MoveBeat.amxd` (an empty Max for Live Instrument
 > template) predates this decision and is no longer part of the build — the
