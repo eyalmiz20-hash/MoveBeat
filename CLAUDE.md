@@ -64,18 +64,30 @@ So the split is **not** a platform-compatibility fix. It buys three things:
 2. The mapping can be tested against a mock body that behaves identically to a real one.
 3. Any controller speaking the protocol can drive the synth — which is what makes the planned MoveNet/webcam controller a drop-in addition rather than a rewrite.
 
-### The controller sends fractions, not Hz
+### The controller owns the mapping, and now the units too
 
-The controller reports *how high the hand is*, as a number between 0 and 1. The synth decides that this means 179 Hz or 4.4 kHz. **Parameter ranges are a property of the instrument, so they live in the instrument.**
+The controller is a **six-slot mapping matrix**, one slot per body part — 2 hands, 2 feet, head,
+torso. Each slot picks a source from that part (`X`, `Y`, `Z`, `SPEED`, or the whole-body
+`SPREAD` / `LEAN`), sends it to **any of the synth's 24 parameters**, and locks that parameter
+inside a min/max band with a linear or exponential curve.
 
-This is why tuning is deliberately split across two places, and knowing which is which saves a lot of hunting:
+**The wire now carries native units (Hz, ms, semitones), not 0–1.** It used to carry a fraction,
+with ranges living only in the instrument. The range lock forced the change: a lock is written
+as "500–2000 Hz", so something has to know what a Hz is, and keeping the old split would have
+meant the same 24-row range table in both patches — a duplicate contract that drifts silently.
+Scaling moved to the controller; the synth still **clamps** every value to the parameter's legal
+range but no longer scales. `synth/docs/MAPPING.md` holds the table and the full rationale.
 
-- **How much movement counts as "full"** → the controller, in `[p mb_features]`. These are the `[scale]` objects.
-- **What a 0–1 value means in Hz** → the synth, in `[p mb_ctrl_in]`.
+Tuning is still split in two, and knowing which is which saves a lot of hunting:
+
+- **How much movement counts as "full"** → the controller, in `[p mb_sources]`. The `[scale]` objects.
+- **How far the parameter may travel** → the min/max on the slot row, live, while sound is playing.
 
 ### Testing on the Mac with no camera
 
-`MoveBeatController.maxpat` has an input-source menu at the top left: **LIVE** (real Kinect on port 7400) or **MOCK**. Mock gives five sliders for manual poses plus an auto-motion generator that emits complete joint messages at the Kinect's real ~30 Hz.
+`MoveBeatController.maxpat` has an input-source menu at the top left: **LIVE** (real Kinect on port 7400) or **MOCK**. Mock gives one slider per body part plus an auto-motion generator that emits complete joint messages for all eight joints at the Kinect's real ~30 Hz, frame trigger last.
+
+**`[p mb_osc_in]`'s gate is `[gate 1 1]` — open by default.** It used to default closed and rely on `loadbang` to open it, so editing the patch in Max (which re-instantiates objects without re-firing `loadbang`) silently killed the entire device: no LIVE, no MOCK, no output, and nothing in the Max console. Keep the `1 1`.
 
 The mock is built to be trustworthy, not merely convenient: it emits exactly **one message per joint per frame**, the same shape and rate as the PC. Both paths were measured and produce **identical feature ranges** (cutoff 0.1333–0.8667, resonance 0.0714–0.7857). A mock that behaves differently from the thing it stands in for is worse than no mock.
 
@@ -147,21 +159,23 @@ Link-local/APIPA addresses (`169.254.0.0/16`) are skipped — this machine repor
 
 ## The OSC contract, hop 2: controller → synth (port 7500, localhost)
 
-Both devices run on the Mac, so this hop never leaves the machine. Five addresses, **each carrying exactly one float in 0.0–1.0**:
+Both devices run on the Mac, so this hop never leaves the machine. One address per parameter,
+`/movebeat/<name>`, **each carrying one float in that parameter's own units** — plus
+`/movebeat/gate` carrying 0 or 1.
 
-| Movement feature | Joints used | OSC address | Synth parameter |
-|---|---|---|---|
-| Right-hand height | `handright.y` | `/movebeat/cutoff` | `cutoff` |
-| Distance between the hands | `handright.x` − `handleft.x` | `/movebeat/resonance` | `resonance` |
-| Torso lean | `spineshoulder.z` − `spinebase.z` | `/movebeat/drive` | `drive` |
-| Right-hand vertical speed | mean \|Δ`handright.y`\| over 8 frames | `/movebeat/outgain` | `outgain` |
-| Body present | `/mb/tracked` | `/movebeat/gate` | indicator only, so far |
+The 24 names are exactly the synth's parameters: `cutoff`, `resonance`, `drive`, `rescomp`,
+`outgain`, `osc1level`, `osc2level`, `sublevel`, `detune`, `pw`, `osc1wave`, `osc2wave`,
+`lfoRate`, `lfoDepth`, `filtEnvAmt`, `glide`, `ampA/D/S/R`, `filtA/D/S/R`. Thirteen are handled
+Max-side in `mb_voice.maxpat`; the other eleven fall through its `route` into `gen~` as Params.
+**`synth/docs/MAPPING.md` is the reference** — legal range and default curve for all 24.
 
-Every joint is gated on `trackingState == 2`, so inferred or lost joints never reach the synth — the last good value simply holds.
+Every joint is gated on `trackingState == 2`, so inferred or lost joints never reach the synth —
+the last good value simply holds. `/mb/tracked` is the last message in each bundle, so the
+controller uses it as the frame-complete trigger and emits one set of mappings per frame.
 
-The synth's ranges, applied in `[p mb_ctrl_in]`: `cutoff` 100–8000 Hz on an **exponential** curve (`100 · 80^x`, so equal hand movement gives equal musical intervals), `resonance` 0–3.5, `drive` and `outgain` 0–1.
-
-`/movebeat/gate` currently only lights an indicator. **Open decision:** when tracking is lost, every parameter freezes at its last value and the synth drones on unchanged. Whether it should mute, fade or freeze is a musical choice, so nothing is wired to it yet.
+`/movebeat/gate` currently only lights an indicator. **Open decision:** when tracking is lost,
+every parameter freezes at its last value and the synth drones on unchanged. Whether it should
+mute, fade or freeze is a musical choice, so nothing is wired to it yet.
 
 ### Why OSC and not MIDI CC
 
@@ -182,9 +196,9 @@ Measured result: a 30 Hz input becomes a ~151 Hz parameter stream whose largest 
 
 If `outgain` ever still clicks on a very fast move, the fix is to pin the Param at 1.0 and do the gain with a `[line~]`-driven `[*~]` in the voice — outside `gen~`, leaving the verified DSP core untouched.
 
-## Two Max traps that cost real debugging time
+## Three Max traps that cost real debugging time
 
-Both were found on 2026-08-08 while building the split, and both are the kind that produce a patch which loads cleanly and looks right.
+The first two were found on 2026-08-08 while building the split; the third on 2026-08-18 while building the mapping matrix. All three produce a patch that loads and looks right.
 
 ### Max numbers subpatcher inlets/outlets by X position, not creation order
 
@@ -194,12 +208,30 @@ This swapped `cutoff`↔`resonance` and `drive`↔`outgain` inside `[p mb_featur
 
 **When editing `.maxpat` JSON, always check that inlet/outlet order matches ascending X.**
 
+### Max's `expr` has no ternary operator
+
+`gen~`'s expr does; the Max object does not. `[expr $i1 < 4 ? $a : $b]` fails with
+`expr: syntax error ? ...` — and note the error **echoes the text from the `?` onward**, so the
+condition appears to have vanished and it reads like the wrong thing is broken.
+
+Comparisons already return 1 or 0, so blend arithmetically instead:
+
+```
+result = A + (cond) * (B - A)
+```
+
+When one branch divides or takes `pow()`, guard its operands so the *unused* branch still
+evaluates to a finite number — `0 * nan` is `nan`, so an unselected branch can still poison the
+result. `[p mb_slot]` does this: the exponential branch clamps its base positive with
+`(($f2 > 0) * $f2 + ($f2 <= 0))` so a min of 0 or a negative range can never produce `nan`.
+
 ### Verify Max patches by capturing their UDP output
 
 The same rule already stated for the Windows app applies to the Max side, for a different reason: reading a patch does not tell you what it does, and the GUI does not show mis-wiring like the above. Bind a socket to the port, decode, and check the value *ranges* against what the maths predicts.
 
 Two practical notes from doing this:
 
+- **A listener on 7500 must bind before Max does.** Max's `udpreceive` takes the loopback unicast stream, and a second socket co-bound afterwards with `SO_REUSEPORT` receives **nothing** — which reads as "the controller is sending nothing at all" when the controller is perfectly healthy. Send yourself a canary packet to prove the listener works before trusting a zero. Broadcast traffic on 7400 does not have this problem: every bound socket gets a copy.
 - **Max restores previously-open patches after a hard kill.** A stale test copy silently re-opened and streamed to the same port alongside the new one, producing an interleaved mess of two value streams that looked like a logic bug. Delete scratch patches, don't just close them.
 - A synthetic Kinect replay is easy and worth having: build the same bundle `OscSender.cs` builds — 25 joints plus `/mb/tracked` — and send it to 7400 at 30 Hz. It comes out at exactly **1144 bytes**, which is a free check that your replay matches the real contract.
 
@@ -354,7 +386,7 @@ synth/             Max 9 (Mac) — two devices + shared DSP
     MoveBeatSynth.maxpat     open this to play; no camera code
     mb_voice.maxpat          one poly~ voice (loaded by name, never opened directly)
   controller/        THE MOVEMENT DEVICE
-    MoveBeatController.maxpat  live Kinect OSC + mock body + feature mapping
+    MoveBeatController.maxpat  live Kinect OSC + mock body + 6-slot mapping matrix
   dsp/*.genexpr      gen~ core: oscillators, drive, Moog ladder filter
   docs/              ARCHITECTURE.md — parameter list and design rationale
                      MAPPING.md     — movement→parameter contract, tuning guide
