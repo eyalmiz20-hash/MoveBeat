@@ -55,6 +55,7 @@ class Program
     static void Main(string[] args)
     {
         bool testMode = false;
+        bool noDoctor = false;
         string ipOverride = null;
 
         for (int i = 0; i < args.Length; i++)
@@ -62,6 +63,10 @@ class Program
             if (string.Equals(args[i], "--test", StringComparison.OrdinalIgnoreCase))
             {
                 testMode = true;
+            }
+            else if (string.Equals(args[i], "--no-doctor", StringComparison.OrdinalIgnoreCase))
+            {
+                noDoctor = true;
             }
             else if (string.Equals(args[i], "--ip", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
             {
@@ -102,6 +107,9 @@ class Program
         }
 
         Console.CancelKeyPress += Console_CancelKeyPress;
+
+        if (!noDoctor)
+            StartDoctor();
 
         if (testMode)
         {
@@ -168,6 +176,56 @@ class Program
             Log("FATAL during startup: " + ex);
             WaitForExitKey();
             Shutdown();
+        }
+    }
+
+    /// <summary>
+    /// Starts tools/kinect-doctor.ps1, the external watchdog that works out why
+    /// this app keeps dying.
+    ///
+    /// It has to be launched from here, and that is not an arbitrary choice. A
+    /// process cannot report its own crash, so the watchdog must be a separate
+    /// process that outlives this one - and with nobody at the PC, the only
+    /// thing that runs freshly-pulled code is this executable: the auto-updater
+    /// rebuilds and relaunches it on every push, but never invokes a new
+    /// script. A .ps1 added to the repo would sit on disk unexecuted until
+    /// someone logged in.
+    ///
+    /// The doctor holds a single-instance mutex, so the repeated relaunches of
+    /// a crash loop still only ever produce one of it. Pass --no-doctor to skip.
+    /// Failure here is logged and otherwise ignored: diagnostics must never be
+    /// able to stop the instrument from playing.
+    /// </summary>
+    static void StartDoctor()
+    {
+        try
+        {
+            string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            // bin\Debug\net48 -> up four levels is the repo root.
+            string script = Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "..", "tools", "kinect-doctor.ps1"));
+
+            if (!File.Exists(script))
+            {
+                Log("kinect-doctor.ps1 not found at " + script + " - skipping diagnostics.");
+                return;
+            }
+
+            var psi = new ProcessStartInfo();
+            psi.FileName = "powershell.exe";
+            // -ExecutionPolicy Bypass because policy is effectively Restricted
+            // here; -NonInteractive so nothing can ever block on a prompt.
+            psi.Arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"" + script + "\"";
+            psi.UseShellExecute = false;
+            psi.CreateNoWindow = true;
+            psi.WindowStyle = ProcessWindowStyle.Hidden;
+            psi.WorkingDirectory = Path.GetDirectoryName(script);
+
+            Process.Start(psi);
+            Log("Started kinect-doctor.ps1 (exits immediately if one is already running).");
+        }
+        catch (Exception ex)
+        {
+            Log("Could not start kinect-doctor.ps1 (ignored): " + ex.Message);
         }
     }
 

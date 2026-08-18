@@ -260,6 +260,42 @@ Kinect v2 multiplexes through the KinectMonitor service, so several apps can rea
 - **`tools/logs/movebeat.log`** (added 2026-08-18) records startup with PID, every `IsAvailable` transition with uptime, frame stalls and recoveries, OSC send failures, and any unhandled exception. Before this the app had no log at all, so "it crashed" left nothing behind and every diagnosis was guesswork.
 - **Read those values from the app's own visible window, not from redirected output** — see the testing trap above.
 
+## The Kinect doctor — diagnosing the PC from the Mac (2026-08-18)
+
+Built because the fault is on the Windows machine and the work happens on the Mac. It answers one question: **is the process dying, or is the sensor dropping?** Those look identical from a distance and have no fix in common.
+
+| Piece | Where | What it does |
+|---|---|---|
+| `tools/kinect-doctor.ps1` | PC | Watches `MoveBeat.exe`, the sensor's PnP device, `KinectMonitor` and the Windows event log. Reports every transition. |
+| `tools/mac/kinect-doctor-listen.py` | **Mac** | Receives that stream, prints it live, keeps score, and states a verdict. |
+
+On the Mac:
+
+```bash
+python3 tools/mac/kinect-doctor-listen.py
+```
+
+### Three design points worth keeping
+
+**It is a separate process, deliberately.** A process cannot report its own crash. The interesting moment is the one where `MoveBeat.exe` stops existing, and only something still running can describe it. The doctor outlives the app it watches — that is the whole point, so do not "simplify" it into the C# app.
+
+**It is started by `MoveBeat.exe`, and that is not arbitrary.** With nobody at the PC, the only thing that runs freshly-pulled code is the executable: the auto-updater rebuilds and relaunches it on every push, but it never invokes a new script. A `.ps1` added to the repo sits on disk unexecuted until someone logs in. So `Program.StartDoctor()` spawns it, guarded by a mutex so a crash loop still produces only one doctor. `--no-doctor` skips it.
+
+**It reports on port 7401, never 7400.** 7400 carries the joint stream into Max. The doctor can run while the synth is playing.
+
+### Reading the verdict
+
+The listener reaches one of these on its own:
+
+- **THE PROCESS IS RESTARTING** — three or more starts. If Windows recorded a crash, it is *faulting* and the `CRASH` lines name the module and exception. If there is no crash record it *exited cleanly*, so something closed it on purpose — check `sync.log` for the auto-updater.
+- **THE SENSOR IS DROPPING OFF USB** — the device changed state repeatedly while the process stayed up. Hardware: USB bandwidth, the sensor's power brick, or USB selective suspend. Nothing in this repo will fix it.
+
+Restart intervals are computed from **the PC's clock**, taken from the packet, not from arrival time — otherwise network delay would be reported as restart timing, which is the one number the tool exists to get right.
+
+### Its limits, stated plainly
+
+The Mac must be on the **wired `192.168.0.x` LAN** — same requirement as the music path; Wi-Fi receives nothing. If the Mac is off or unreachable, the PC still writes everything to `tools/logs/kinect-doctor.log`. And the doctor only starts once `MoveBeat.exe` has restarted at least once after the push that delivers it.
+
 ### "It crashes every few seconds and restarts itself" — how to tell what is actually happening
 
 Four completely different faults produce that same description, and they are told apart by **one command**, not by guessing:
@@ -334,7 +370,11 @@ tools/             Windows automation
   uninstall-kinect-autostart.ps1
   install-task.ps1           Task Scheduler variant — REQUIRES ADMIN, fails here
   uninstall-task.ps1
-  logs/                      sync.log, kinect-autostart.log, movebeat.log (gitignored)
+  kinect-doctor.ps1          PC-side watchdog: why did MoveBeat.exe die?
+  mac/
+    kinect-doctor-listen.py  MAC-side receiver + verdict (run this one)
+  logs/                      sync.log, kinect-autostart.log, movebeat.log,
+                             kinect-doctor.log, kinect-doctor-received.log (gitignored)
 ```
 
 Two Startup-folder shortcuts are installed, independent of each other:
