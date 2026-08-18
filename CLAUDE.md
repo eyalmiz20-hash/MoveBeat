@@ -16,9 +16,10 @@ Final thesis project: movement to sound. A Kinect v2 tracks a body; the coordina
 | Skeletal tracking | **Working** — see note below |
 | Max side split into two devices | **Done** — synth device + controller device, see below |
 | Synth device | **Working on macOS standalone.** Plays from MIDI/keyboard with no camera; all 24 parameters on a panel |
-| Controller device | **Working.** Both input paths verified on the Mac: live Kinect OSC, and a built-in mock body |
-| Movement → sound mapping | **Working end to end**, verified by UDP capture. Four features live |
-| Verified on the real PC + Kinect | **Not yet** — the last open step |
+| Controller device | **Working**, and rebuilt 2026-08-18 as a 6-slot mapping matrix — see below. Both input paths verified on the Mac: live Kinect OSC, and a built-in mock body |
+| Movement → sound mapping | **Any body part → any of the 24 synth parameters**, with a per-slot output range lock (2026-08-18). Replaces the four hardcoded features |
+| Hop 1 against real hardware | **Verified live from the Mac 2026-08-18** — ~26 Hz, 1144-byte bundles from `192.168.0.101`, `/mb/tracked` = 1, 24/25 joints at `trackingState` 2 |
+| The new mapping matrix against real hardware | **Not yet** — validated structurally only. The last open step |
 
 ### Skeletal tracking — resolved (it was distance)
 
@@ -48,7 +49,7 @@ The Max side used to be one patch with the camera wired straight into the engine
 | Device | File | Role |
 |---|---|---|
 | **Synth** | `synth/instrument/MoveBeatSynth.maxpat` | The instrument. MIDI/keyboard in, audio out. **No camera code of any kind.** Runs on macOS alone. |
-| **Controller** | `synth/controller/MoveBeatController.maxpat` | Movement in, normalised 0–1 features out. Reads the Kinect stream, or its own mock body. |
+| **Controller** | `synth/controller/MoveBeatController.maxpat` | Movement in, synth parameters out. Six mapping slots, one per body part. Reads the Kinect stream, or its own mock body. |
 
 `synth/instrument/mb_voice.maxpat` is the third file — one `poly~` voice. It is only separate because `poly~` requires its voice patcher to be its own file; it is never opened directly.
 
@@ -183,28 +184,28 @@ Worth writing up, because MIDI CC is the obvious first instinct for "controller 
 
 **The hard reason:** the Kinect and the synth are on two different computers. MIDI does not cross Ethernet without RTP-MIDI, which on Windows means installing a third-party driver — and **this account is not an administrator**. OSC over UDP already works and is byte-verified.
 
-**The soft reason:** standard MIDI CC is 7-bit, 128 steps. Across a 100–8000 Hz exponential cutoff sweep each step is about a 3.6% frequency jump, audible as stepping on a slow sweep even with smoothing. OSC carries a 32-bit float, so the question does not arise. If CC is ever wanted for a hardware controller, add `[ctlin]` alongside `[udpreceive]` and scale by 1/127 — everything downstream already expects 0–1 — and prefer 14-bit CC for `cutoff`.
+**The soft reason:** standard MIDI CC is 7-bit, 128 steps. Across the full 20–18000 Hz exponential cutoff sweep each step is a large frequency jump, audible as stepping on a slow sweep even with smoothing. OSC carries a 32-bit float, so the question does not arise. If CC is ever wanted for a hardware controller, add `[ctlin]` in the **controller** and feed it into a slot's source inlet in place of a movement source — the slot's own min/max then converts 1/127 into the parameter's units, so the CC never has to know them. Prefer 14-bit CC for `cutoff`. Note this is a change from the pre-2026-08-18 advice: `[p mb_ctrl_in]` no longer scales, so wiring a raw CC into the synth would now send 0–127 straight at a parameter and get clamped.
 
 ### Smoothing — two mechanisms, because there are two kinds of parameter
 
 The camera stream is 30 Hz. Sent raw, that steps audibly. The two routes need different fixes:
 
-- **`cutoff` is a signal** inside the voice. The original `[sig~ 800]` jumped at block boundaries; it is now a `[line~]` fed by `[pack 0. 25]`, ramping each value over 25 ms at signal rate.
-- **`resonance`, `drive`, `outgain` are `gen~` Params**, set by message. **`gen~` does not interpolate Param changes** — this is the non-obvious part. They are ramped at control rate in `[p mb_ctrl_in]` with `[pack 0. 25]` → `[line 0. 5]`: a 25 ms ramp emitted every 5 ms.
+- **`cutoff` is a signal** inside the voice. The original `[sig~ 800]` jumped at block boundaries; it is now a `[line~]` fed by `[pack 0. 25]`, ramping each value over 25 ms at signal rate. Because the voice already ramps it, `[p mb_ctrl_in]` passes `cutoff` straight through with no control-rate smoothing — do not add a second ramp.
+- **Everything else arrives as a message**, and for the eleven `gen~` Params **`gen~` does not interpolate Param changes** — this is the non-obvious part. All 23 non-`cutoff` parameters are ramped at control rate in `[p mb_ctrl_in]` with `[pack 0. 25]` → `[line 0. 5]`: a 25 ms ramp emitted every 5 ms. `osc1wave` and `osc2wave` are additionally rounded to whole numbers, since a half-way wave shape is meaningless.
 
 Measured result: a 30 Hz input becomes a ~151 Hz parameter stream whose largest single step is 0.25% of the observed range.
 
 If `outgain` ever still clicks on a very fast move, the fix is to pin the Param at 1.0 and do the gain with a `[line~]`-driven `[*~]` in the voice — outside `gen~`, leaving the verified DSP core untouched.
 
-## Three Max traps that cost real debugging time
+## Max traps that cost real debugging time
 
-The first two were found on 2026-08-08 while building the split; the third on 2026-08-18 while building the mapping matrix. All three produce a patch that loads and looks right.
+The first was found on 2026-08-08 while building the split, the next two on 2026-08-18 while building the mapping matrix. All of them produce a patch that loads and looks right. The last entry is not a trap but the method that catches all of them.
 
 ### Max numbers subpatcher inlets/outlets by X position, not creation order
 
 An `inlet`/`outlet` object's index comes from its **on-screen X coordinate**, not from where it appears in the file or the order it was made. Lay them out in a different left-to-right order than you intend and Max silently renumbers them; the parent then connects to the wrong ones **with no error in the Max console**.
 
-This swapped `cutoff`↔`resonance` and `drive`↔`outgain` inside `[p mb_features]`. Everything loaded, and the values looked entirely plausible — they were simply arriving on the wrong addresses. It was only caught by capturing the device's UDP output and noticing the *ranges* belonged to the wrong parameters.
+This swapped `cutoff`↔`resonance` and `drive`↔`outgain` inside `[p mb_features]` (that subpatch and `[p mb_map]` were replaced by `[p mb_sources]` + six `[p mb_slot]` on 2026-08-18; the lesson is unchanged and the new subpatchers are checked the same way). Everything loaded, and the values looked entirely plausible — they were simply arriving on the wrong addresses. It was only caught by capturing the device's UDP output and noticing the *ranges* belonged to the wrong parameters.
 
 **When editing `.maxpat` JSON, always check that inlet/outlet order matches ascending X.**
 
@@ -224,6 +225,22 @@ When one branch divides or takes `pow()`, guard its operands so the *unused* bra
 evaluates to a finite number — `0 * nan` is `nan`, so an unselected branch can still poison the
 result. `[p mb_slot]` does this: the exponential branch clamps its base positive with
 `(($f2 > 0) * $f2 + ($f2 <= 0))` so a min of 0 or a negative range can never produce `nan`.
+
+### If you write your own OSC decoder, get the string padding right
+
+`CLAUDE.md` recommends decoding the stream as the way to verify both sides, so this is worth
+stating exactly. **An OSC string is padded to a multiple of 4 bytes *including* its null
+terminator.** For an address that is already a multiple of 4 once the null is added — `/mb/tracked`
+is 11 characters, so 12 with the null — the correct advance is 12, **not** 16.
+
+Getting this wrong reads as corrupt data rather than a decoder bug, which is what makes it
+expensive. On 2026-08-18 an over-advance of 4 bytes made `/mb/tracked` decode as having no
+arguments at all and `/mb/handtipleft` report a type tag of `f` instead of `,ffff` — so the
+packet looked malformed and the PC looked broken, when the stream was byte-perfect. The correct
+advance for a string of length L (excluding the null) is `(L + 4) & ~3`.
+
+A free cross-check: the real bundle is exactly **1144 bytes** and consumes 1144/1144. If your
+decoder does not land on that, suspect the decoder first.
 
 ### Verify Max patches by capturing their UDP output
 
@@ -418,7 +435,11 @@ Two Startup-folder shortcuts are installed, independent of each other:
 
 - **The reported “crashes every ~10 s and restarts” symptom is not yet confirmed against a cause.** Reported 2026-08-18 from the PC. Every code path that can produce it has been fixed or instrumented (unhandled exceptions on the Kinect thread, `SocketException` from `osc.Send`, the watchdog null race, the null-stdin instant exit, and the auto-updater's kill-before-verify loop), but **none of it was observed on the live machine** — the diagnosis was made by reading code on the Mac. `tools/logs/movebeat.log` now records what is needed to settle it; read it after the next occurrence and follow the table in the diagnosis section above. Note the auto-updater loop had a ~30s period, so it does not match a 10s symptom.
 
-- **Not yet verified on the real PC with a real Kinect.** Everything on the Mac side is measured and working, including a synthetic replay of the PC's exact packet format, but the split has not run against live hardware.
+  **First live evidence, 2026-08-18:** watched from the Mac, the PC streamed continuously for the whole observed window at ~26 Hz with a tracked body, and the sampled packets all carried the same UDP source port — i.e. one socket, so no process restart inside that window. That is a short window and not a clearance, but it is the first direct observation that the app runs steadily, and it argues the symptom is intermittent rather than constant.
+
+- **Hop 1 is verified against real hardware; the Max side is not.** On 2026-08-18 the PC's stream was decoded live from the Mac: ~26 Hz, 1144-byte bundles from `192.168.0.101`, `/mb/tracked` = 1, and 24 of 25 joints at `trackingState` 2 with plausible coordinates. So the PC, the sensor, the wired LAN and the OSC encoder are all good end to end. **The new 6-slot matrix has only been validated structurally** — JSON, patchline index bounds, inlet/outlet X ordering, subpatcher I/O counts, and the scaling maths checked against a reference implementation. It has not been run in Max against that stream.
+
+- **Slot settings do not survive closing the patch.** `umenu` does not persist its selection, so the six destinations, ranges and curves must be re-picked each session. Making them stick needs `pattrstorage` (which would also give preset slots for switching mappings mid-performance). Not built — it is a real addition, not a tweak.
 - **`/movebeat/gate` does nothing but light an indicator.** On loss of tracking the sound freezes and drones. Needs a musical decision — mute, fade, or hold.
 - **`synth/build/MoveBeat_ableton_ves.amxd` is a divergent fork**, not an export: a near-copy of the old patch with `notein`→`midiin` and `plugout~` added, carrying its own drifted parameter state. It also contradicts `ARCHITECTURE.md` and `BUILD_GUIDE.md`, which both state Ableton and Max for Live are deliberately out of scope. Decide whether to delete it or rebuild it properly from the new synth device.
 - **Fixed 2026-08-08:** the old `[p mb_mapping]` had a dangling right-hand-X gate, so `resonance` computed `abs(0 − lefthand.x)` and tracked one hand's distance from centre rather than the spread between the hands. Fixed in the old patch too, not only in the new controller.
