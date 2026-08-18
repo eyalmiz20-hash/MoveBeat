@@ -23,6 +23,12 @@ class OscSender : IDisposable
 {
     const int BufferSize = 2048;
 
+    /// <summary>
+    /// Winsock SIO_UDP_CONNRESET control code (0x9800000C). See the
+    /// constructor for why it is switched off.
+    /// </summary>
+    const int SIO_UDP_CONNRESET = -1744830452;
+
     readonly Socket _socket;
     readonly IPEndPoint _target;
     readonly byte[] _buf = new byte[BufferSize];
@@ -41,6 +47,28 @@ class OscSender : IDisposable
     {
         _socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
         _socket.EnableBroadcast = true;
+
+        // Windows-specific, and a genuine process-killer without it.
+        //
+        // When a UDP datagram reaches a host that has nothing listening on the
+        // port, that host replies with ICMP Port Unreachable. Windows records
+        // it against the sending socket and raises it as a SocketException
+        // (WSAECONNRESET, 10054) on a LATER call - so a perfectly ordinary
+        // "the Max patch isn't open yet" turns into an exception on a
+        // subsequent send, thrown inside the 30 Hz Kinect frame callback.
+        //
+        // SIO_UDP_CONNRESET = false tells Windows to stop reporting those.
+        // This is a fire-and-forget broadcast stream: whether anyone is
+        // listening is none of the sender's business.
+        try
+        {
+            _socket.IOControl(SIO_UDP_CONNRESET, new byte[] { 0, 0, 0, 0 }, null);
+        }
+        catch
+        {
+            // Not supported on this platform/stack - the caller also guards
+            // Send(), so this is a belt-and-braces measure.
+        }
 
         IPAddress targetIp = !string.IsNullOrEmpty(ipOverride)
             ? IPAddress.Parse(ipOverride)
@@ -144,6 +172,13 @@ class OscSender : IDisposable
     /// <summary>OSC string: ASCII bytes + at least one null, padded to a 4-byte boundary.</summary>
     void WriteString(string s)
     {
+        // The bundle is 1144 bytes today against a 2048-byte buffer. If joints
+        // or fields are ever added, fail with a message that says what is
+        // wrong instead of walking off the end of the array.
+        if (_pos + s.Length + 4 > BufferSize)
+            throw new InvalidOperationException(
+                "OSC bundle exceeds the " + BufferSize + "-byte buffer. Raise BufferSize and re-check the 1472-byte UDP limit.");
+
         int start = _pos;
         for (int i = 0; i < s.Length; i++)
             _buf[_pos++] = (byte)s[i];
@@ -235,7 +270,14 @@ class OscSender : IDisposable
         WriteInt32BEAt(_buf, sizePos, msgLen);
     }
 
-    /// <summary>Sends the buffer built since BeginBundle() as a single UDP packet.</summary>
+    /// <summary>
+    /// Sends the buffer built since BeginBundle() as a single UDP packet.
+    ///
+    /// May throw SocketException on a transient network fault (interface down,
+    /// LAN unreachable). The caller absorbs it - see Program.SafeSend - because
+    /// losing frames while a cable is out is correct behaviour for a control
+    /// stream, and taking the process down for it is not.
+    /// </summary>
     public void Send()
     {
         _socket.SendTo(_buf, 0, _pos, SocketFlags.None, _target);

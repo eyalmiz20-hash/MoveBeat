@@ -4,12 +4,28 @@
 # moved, it kills the running MoveBeat.exe (file lock), mirrors the working
 # tree to origin/main (force-reset - this PC never keeps local edits),
 # rebuilds, and relaunches. Runs hidden via tools/run-hidden.vbs, registered
-# by tools/install-task.ps1.
+# by tools/install-startup.ps1.
 #
 # Trade-off: this only runs while the user is logged on, and stops at
 # logoff - the correct trade for a desktop app needing a visible window and
 # USB (Kinect) access. Session 0 ("run whether logged on or not") is off the
 # table for that reason.
+#
+# ---------------------------------------------------------------------------
+# THE RULE THIS SCRIPT MUST NEVER BREAK
+#
+# It may only kill MoveBeat.exe when it is genuinely about to install a new
+# build. An earlier version killed the app FIRST and only then ran fetch and
+# reset, without checking whether either succeeded. If the fetch failed or the
+# remote-tracking ref did not advance, HEAD never reached the remote SHA - so
+# the very next poll saw the same "change", killed the app again, and did so
+# forever. The Kinect app died on a fixed cycle for as long as git stayed
+# unhappy, with nothing in the log saying git had failed at all.
+#
+# Hence: fetch and verify BEFORE touching the process, check every git exit
+# code, confirm HEAD actually landed on the expected SHA afterwards, and give
+# up on a SHA that will not apply instead of retrying it forever.
+# ---------------------------------------------------------------------------
 
 $ErrorActionPreference = 'Continue'
 
@@ -29,11 +45,24 @@ $MaxLogBytes = 2MB
 $PollIntervalSeconds = 30
 $BackoffSteps = @(60, 120, 300)   # applied after 1st, 2nd, 3rd+ consecutive failures
 
+# Churn brake. If this many update cycles happen inside the window, something
+# is wrong with git rather than with the code being shipped - stop touching
+# MoveBeat.exe entirely for a while and say so loudly. A synth that keeps
+# dying mid-performance is worse than one running slightly old code.
+$MaxUpdatesPerWindow = 4
+$UpdateWindowMinutes = 10
+$UpdateCooldownMinutes = 30
+
+# How many times to retry a remote SHA that refuses to apply before parking
+# it. Without this, an un-appliable SHA is retried on every single poll.
+$MaxAttemptsPerSha = 3
+
 if (-not (Test-Path $LogDir)) {
     New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 }
 
-# Runs git and returns its combined output as plain text.
+# Runs git and returns its combined output as plain text. The exit code is
+# left in $script:GitExitCode.
 #
 # Why this exists: in Windows PowerShell 5.1, "2>&1" on a NATIVE command wraps
 # each stderr line in an ErrorRecord, so piping it to Out-String renders a
@@ -60,6 +89,20 @@ function Invoke-Git {
     return (($lines -join "`n").Trim())
 }
 
+# Same as Invoke-Git, but throws on a non-zero exit code. Every git call in
+# the update path uses this: the old code captured the exit status into
+# $script:GitExitCode and then never once looked at it, so a failed fetch was
+# indistinguishable from a successful one and the loop marched on regardless.
+function Invoke-GitChecked {
+    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$GitArgs)
+
+    $out = Invoke-Git -GitArgs $GitArgs
+    if ($script:GitExitCode -ne 0) {
+        throw ("git " + ($GitArgs -join ' ') + " failed (exit $script:GitExitCode): " + $out)
+    }
+    return $out
+}
+
 function Write-Log {
     param([string]$Message)
     $line = '[{0}] {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message
@@ -79,6 +122,37 @@ function Write-Log {
     catch {
         # Trimming is best-effort - never let a log-housekeeping failure kill the loop.
     }
+}
+
+# Stops MoveBeat.exe. Only ever called once an update is known to be real and
+# applicable - see the rule at the top of this file.
+function Stop-MoveBeat {
+    $procs = Get-Process -Name MoveBeat -ErrorAction SilentlyContinue
+    if (-not $procs) { return }
+
+    # Ask nicely first. Stop-Process -Force is a hard TerminateProcess:
+    # sensor.Close() never runs, so KinectMonitor keeps holding the sensor
+    # handle. Do that repeatedly and the sensor ends up reporting
+    # IsAvailable=False to every client until it is physically replugged.
+    # CloseMainWindow lets the app's own shutdown path dispose the reader and
+    # close the sensor properly.
+    Write-Log 'Stopping running MoveBeat.exe before build (graceful first)...'
+    foreach ($proc in @($procs)) {
+        try { [void]$proc.CloseMainWindow() } catch { }
+    }
+    $procs | Wait-Process -Timeout 8 -ErrorAction SilentlyContinue
+
+    $stillUp = Get-Process -Name MoveBeat -ErrorAction SilentlyContinue
+    if ($stillUp) {
+        Write-Log 'Graceful close timed out - forcing.'
+        $stillUp | Stop-Process -Force
+        $stillUp | Wait-Process -Timeout 10 -ErrorAction SilentlyContinue
+    }
+
+    # After a hard terminate sensor.Close() never ran, so KinectMonitor can
+    # still hold the sensor handle briefly. Relaunching too fast produces
+    # "Kinect not found".
+    Start-Sleep -Seconds 2
 }
 
 # ---------------------------------------------------------------------------
@@ -127,11 +201,15 @@ Write-Log "Startup settle delay: sleeping $PollIntervalSeconds s before first ch
 Start-Sleep -Seconds $PollIntervalSeconds
 
 $consecutiveFailures = 0
+$updateTimes         = @()          # timestamps of recent update cycles
+$cooldownUntil       = [DateTime]::MinValue
+$stuckSha            = $null        # a remote SHA that would not apply
+$stuckAttempts       = 0
 
 while ($true) {
     try {
-        $localSha = Invoke-Git rev-parse HEAD
-        $remoteLine = Invoke-Git ls-remote origin refs/heads/main
+        $localSha = Invoke-GitChecked rev-parse HEAD
+        $remoteLine = Invoke-GitChecked ls-remote origin refs/heads/main
         $remoteSha = ($remoteLine -split '\s+')[0]
 
         if ($localSha.Length -ne 40) {
@@ -145,55 +223,67 @@ while ($true) {
         if ($remoteSha -eq $localSha) {
             Write-Log ("No change (HEAD={0})." -f $localSha.Substring(0, 7))
             $consecutiveFailures = 0
+            $stuckSha = $null
+            $stuckAttempts = 0
+        }
+        elseif ((Get-Date) -lt $cooldownUntil) {
+            Write-Log ("Change detected but updates are paused until {0} (churn brake). MoveBeat.exe left running." -f $cooldownUntil.ToString('HH:mm:ss'))
+        }
+        elseif ($remoteSha -eq $stuckSha -and $stuckAttempts -ge $MaxAttemptsPerSha) {
+            Write-Log ("Remote {0} has failed to apply {1} times - parked. MoveBeat.exe left running. Fix the repo on this machine (see previous errors), or push a new commit." -f $remoteSha.Substring(0, 7), $stuckAttempts)
         }
         else {
             Write-Log ("Change detected: local {0} -> remote {1}" -f $localSha.Substring(0, 7), $remoteSha.Substring(0, 7))
 
-            # 1. Kill MoveBeat.exe BEFORE building - a running exe holds a
-            #    lock on the output file and the build fails with MSB3021.
-            #    Order is kill -> wait -> build -> relaunch, never build-then-kill.
-            $running = Get-Process -Name MoveBeat -ErrorAction SilentlyContinue
-            if ($running) {
-                # Ask nicely first. Stop-Process -Force is a hard
-                # TerminateProcess: sensor.Close() never runs, so KinectMonitor
-                # keeps holding the sensor handle. Do that repeatedly and the
-                # sensor ends up reporting IsAvailable=False to every client
-                # until it is physically replugged. CloseMainWindow lets the
-                # app's own shutdown path dispose the reader and close the
-                # sensor properly.
-                Write-Log 'Stopping running MoveBeat.exe before build (graceful first)...'
-                foreach ($proc in @($running)) {
-                    try { [void]$proc.CloseMainWindow() } catch { }
-                }
-                $running | Wait-Process -Timeout 8 -ErrorAction SilentlyContinue
+            if ($remoteSha -eq $stuckSha) { $stuckAttempts++ } else { $stuckSha = $remoteSha; $stuckAttempts = 1 }
 
-                $stillUp = Get-Process -Name MoveBeat -ErrorAction SilentlyContinue
-                if ($stillUp) {
-                    Write-Log 'Graceful close timed out - forcing.'
-                    $stillUp | Stop-Process -Force
-                    $stillUp | Wait-Process -Timeout 10 -ErrorAction SilentlyContinue
-                }
+            # 1. Fetch FIRST, and prove the remote-tracking ref actually moved,
+            #    all while MoveBeat.exe is still running and streaming. If any
+            #    of this fails we have cost the musician nothing.
+            $fetchOut = Invoke-GitChecked fetch origin main
+            Write-Log ("git fetch: " + $fetchOut)
+
+            # "git fetch origin main" updates refs/remotes/origin/main only
+            # opportunistically - it does not if the remote has no fetch
+            # refspec configured (a --single-branch clone, or a hand-added
+            # remote). Then "reset --hard origin/main" resets to the OLD sha,
+            # HEAD never reaches $remoteSha, and every future poll sees the
+            # same change again. Catch that here rather than discovering it as
+            # an endless restart loop.
+            $trackingSha = Invoke-GitChecked rev-parse origin/main
+            if ($trackingSha -ne $remoteSha) {
+                throw ("fetch did not advance origin/main: it is at {0} but the remote is at {1}. The remote is probably missing a fetch refspec - check 'git config --get-all remote.origin.fetch'. MoveBeat.exe left running." -f $trackingSha.Substring(0, 7), $remoteSha.Substring(0, 7))
             }
-            # Stop-Process -Force is a hard terminate, so sensor.Close() never
-            # runs - KinectMonitor can still hold the sensor handle briefly.
-            # Relaunching too fast produces "Kinect not found".
-            Start-Sleep -Seconds 2
 
-            # 2. Mirror to origin/main. Pin it explicitly - a stale
+            # 2. Only now stop the app - a running exe holds a lock on its own
+            #    output file and the build would fail with MSB3021.
+            Stop-MoveBeat
+
+            # 3. Mirror to origin/main. Pin it explicitly - a stale
             #    refs/heads/master still exists on the remote and must never
             #    be resolved by accident. No git clean: bin/obj are
             #    gitignored, so reset won't touch them - keep them for fast
             #    incremental builds.
-            $fetchOut = Invoke-Git fetch origin main
-            Write-Log ("git fetch: " + $fetchOut)
-
-            $resetOut = Invoke-Git reset --hard origin/main
+            $resetOut = Invoke-GitChecked -GitArgs @('reset', '--hard', 'origin/main')
             Write-Log ("git reset: " + $resetOut)
 
-            $newSha = Invoke-Git rev-parse HEAD
+            $newSha = Invoke-GitChecked rev-parse HEAD
+            if ($newSha -ne $remoteSha) {
+                throw ("reset did not land on the remote SHA: HEAD is {0}, expected {1}." -f $newSha.Substring(0, 7), $remoteSha.Substring(0, 7))
+            }
             Write-Log ("Now at {0}." -f $newSha.Substring(0, 7))
 
-            # 3. Build - absolute dotnet path (a scheduled task's PATH may
+            # Record the cycle for the churn brake.
+            $cutoff = (Get-Date).AddMinutes(-$UpdateWindowMinutes)
+            $updateTimes = @(@($updateTimes) | Where-Object { $_ -gt $cutoff })
+            $updateTimes += (Get-Date)
+            if ($updateTimes.Count -gt $MaxUpdatesPerWindow) {
+                $cooldownUntil = (Get-Date).AddMinutes($UpdateCooldownMinutes)
+                Write-Log ("WARNING: {0} update cycles in {1} min - that is churn, not development. Pausing updates until {2}; MoveBeat.exe will be left alone." -f $updateTimes.Count, $UpdateWindowMinutes, $cooldownUntil.ToString('HH:mm:ss'))
+                $updateTimes = @()
+            }
+
+            # 4. Build - absolute dotnet path (a scheduled task's PATH may
             #    differ from a shell's), explicit csproj (no root .sln).
             Write-Log 'Building...'
             $buildOut = ((& $DotnetExe build $Csproj -c Debug -v minimal --nologo 2>&1) | Out-String)
@@ -224,12 +314,14 @@ while ($true) {
                 # script. PowerShell reads the whole file into memory at
                 # launch, so this running instance is unaffected - flag it
                 # clearly instead of silently doing nothing.
-                $toolsChanged = Invoke-Git diff --name-only $localSha $newSha -- tools
+                $toolsChanged = Invoke-Git -GitArgs @('diff', '--name-only', $localSha, $newSha, '--', 'tools')
                 if ($toolsChanged.Length -gt 0) {
                     Write-Log 'NOTE: tools/ changed in this pull - this poller script was updated on disk, but the running instance still holds the old copy in memory. To apply: log off and back on, or run tools\uninstall-startup.ps1 then relaunch tools\run-hidden.vbs.'
                 }
 
                 $consecutiveFailures = 0
+                $stuckSha = $null
+                $stuckAttempts = 0
             }
         }
     }

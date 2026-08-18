@@ -2,7 +2,7 @@
 
 Final thesis project: movement to sound. A Kinect v2 tracks a body; the coordinates drive a virtual-analog synthesizer.
 
-## Current status (as of 2026-08-08)
+## Current status (as of 2026-08-18)
 
 | Piece | State |
 |---|---|
@@ -205,9 +205,23 @@ Two practical notes from doing this:
 
 ## The auto-updater — and its one sharp edge
 
-`tools/sync-loop.ps1` polls `origin/main` every 30s (via a cheap `git ls-remote` SHA check). When the remote moves it: kills `MoveBeat.exe` → waits → `git reset --hard origin/main` → rebuilds → relaunches.
+`tools/sync-loop.ps1` polls `origin/main` every 30s (via a cheap `git ls-remote` SHA check). When the remote moves it: `git fetch` → **verifies `origin/main` actually advanced** → kills `MoveBeat.exe` → `git reset --hard origin/main` → **verifies HEAD landed on the remote SHA** → rebuilds → relaunches.
 
 **Kill before build is mandatory** — a running exe holds a lock on its own output file and the build fails with MSB3021.
+
+**But kill only after the update is known to be applicable** (fixed 2026-08-18). The original order was kill → fetch → reset → build, and *no git exit code was ever checked* — `Invoke-Git` stored the status in `$script:GitExitCode` and nothing read it. So if `fetch` failed, or if `origin/main` never advanced, `reset --hard origin/main` quietly reset to the **old** SHA, HEAD never reached the remote SHA, and the next poll saw the identical "change" again. The result is a loop that **kills and relaunches the Kinect app every cycle, forever**, while the log cheerfully reports a successful update.
+
+The `origin/main`-did-not-advance case is not hypothetical: `git fetch origin main` updates `refs/remotes/origin/main` only *opportunistically*, and does not do so at all if the remote has no fetch refspec configured (a `--single-branch` clone, or a hand-added remote). Check with `git config --get-all remote.origin.fetch`.
+
+Three guards now make that loop impossible:
+
+| Guard | What it stops |
+|---|---|
+| Fetch + verify **before** `Stop-MoveBeat` | A failed git cycle can no longer kill the app at all |
+| A remote SHA that will not apply is **parked** after 3 attempts | Endless retries of one bad SHA |
+| Churn brake: >4 update cycles in 10 min → updates pause for 30 min | Any other cause of repeated kill/relaunch |
+
+**The period of this loop was ~30s + build time, never 10s** — worth knowing when matching a symptom to a cause.
 
 > ⚠️ **The PC is a mirror, not a workspace.** `git reset --hard origin/main` **destroys uncommitted changes to tracked files** the moment anything is pushed from the Mac. Untracked new files survive (there is deliberately no `git clean`), but a modified tracked file does not.
 >
@@ -242,8 +256,46 @@ Kinect v2 multiplexes through the KinectMonitor service, so several apps can rea
 ### Sensor diagnostics built into the app
 
 - `MoveBeat.exe` prints `IsOpen`/`IsAvailable` at startup and logs every `IsAvailableChanged` transition.
-- A **frame watchdog** reports `NO FRAMES for Ns` after 5 seconds of silence. This distinguishes the two faults that look identical on screen: "nobody is in view" versus "the sensor is not streaming at all".
+- A **frame watchdog** reports `NO FRAMES for Ns` after 5 seconds of silence. This distinguishes the two faults that look identical on screen: "nobody is in view" versus "the sensor is not streaming at all". It logs only the *transitions* — stalled, then resumed — so a sensor that drops and recovers on a cycle is visible as a series of timestamped pairs.
+- **`tools/logs/movebeat.log`** (added 2026-08-18) records startup with PID, every `IsAvailable` transition with uptime, frame stalls and recoveries, OSC send failures, and any unhandled exception. Before this the app had no log at all, so "it crashed" left nothing behind and every diagnosis was guesswork.
 - **Read those values from the app's own visible window, not from redirected output** — see the testing trap above.
+
+### "It crashes every few seconds and restarts itself" — how to tell what is actually happening
+
+Four completely different faults produce that same description, and they are told apart by **one command**, not by guessing:
+
+```powershell
+Get-Content C:\dev\MoveBeat\tools\logs\movebeat.log -Tail 40
+```
+
+| What the log shows | What is actually happening |
+|---|---|
+| Repeated `MoveBeat starting. PID=…` with a **new PID** each time | The **process** really is dying and being relaunched. The preceding `UNHANDLED EXCEPTION` line says why. |
+| **One** PID, but repeated `Sensor IsAvailable -> False` / `-> True` | The **sensor** is dropping and re-enumerating. The process never restarted. This is USB bandwidth, the power adapter, or a USB selective-suspend setting — not code. |
+| One PID, repeated `NO FRAMES for Ns` then `Frames RESUMED` | The sensor is attached but the stream stalls. Same hardware family of causes. |
+| Nothing repeating in this log, but `sync.log` shows repeated `Relaunched MoveBeat.exe.` | The **auto-updater** is doing it — see the sharp-edge section above. |
+
+Cross-check the last row with:
+
+```powershell
+Get-Content C:\dev\MoveBeat\tools\logs\sync.log -Tail 40
+```
+
+A healthy poller prints `No change (HEAD=…)` every 30s and nothing else. Any other repeating pattern there is the updater's fault.
+
+### Why a transient error used to kill the whole process (fixed 2026-08-18)
+
+`BodyReader_FrameArrived` runs on a **Kinect-owned background thread** 30 times a second. On .NET Framework an exception escaping a background thread terminates the process immediately — so a single bad frame or a single failed UDP send took the entire app down, with no message anywhere.
+
+`osc.Send()` was the live hazard, for a genuinely non-obvious Windows reason: when a UDP datagram reaches a host with nothing listening on the port, that host replies **ICMP Port Unreachable**, and Windows raises it against the *sending* socket as `SocketException` (WSAECONNRESET, 10054) on a **later** call. So "the Max patch isn't open yet" surfaces as an exception thrown inside the 30 Hz frame callback — i.e. as an app that dies seconds after starting, repeatedly, and looks exactly like a hardware fault.
+
+Both halves are fixed: `SIO_UDP_CONNRESET` is switched off on the socket (this stream is fire-and-forget; whether anyone is listening is none of the sender's business), and `SafeSend` absorbs and rate-limits what is left. Losing packets while a cable is out is the correct behaviour for a control stream — taking the process down for it is not.
+
+### The stdin trap has a second, worse half
+
+`CLAUDE.md` already warned that `Start-Process -RedirectStandardOutput` leaves stdin as the null device, so `Console.ReadLine()` returns instantly and the app exits within milliseconds. The part that was not written down: the app then **exits**, and anything that relaunches it produces a perfect imitation of a crash-restart loop.
+
+`WaitForExitKey()` now checks for `null` — meaning "no interactive stdin" — logs it, and **keeps streaming** instead of exiting. Having no keyboard attached is not a reason for a streaming app to stop.
 
 ### Never hard-kill the app
 
@@ -282,7 +334,7 @@ tools/             Windows automation
   uninstall-kinect-autostart.ps1
   install-task.ps1           Task Scheduler variant — REQUIRES ADMIN, fails here
   uninstall-task.ps1
-  logs/                      sync.log, kinect-autostart.log (gitignored)
+  logs/                      sync.log, kinect-autostart.log, movebeat.log (gitignored)
 ```
 
 Two Startup-folder shortcuts are installed, independent of each other:
@@ -291,6 +343,8 @@ Two Startup-folder shortcuts are installed, independent of each other:
 `synth/docs/ARCHITECTURE.md` is the reference for the synth's parameter names (`cutoff`, `resonance`, `drive`, `pw`, `outgain`…) and the DSP design rationale. `synth/docs/MAPPING.md` is the reference for the movement→parameter contract and for where to tune what. **Read both before touching anything in `synth/`.**
 
 ## Known issues / open decisions
+
+- **The reported “crashes every ~10 s and restarts” symptom is not yet confirmed against a cause.** Reported 2026-08-18 from the PC. Every code path that can produce it has been fixed or instrumented (unhandled exceptions on the Kinect thread, `SocketException` from `osc.Send`, the watchdog null race, the null-stdin instant exit, and the auto-updater's kill-before-verify loop), but **none of it was observed on the live machine** — the diagnosis was made by reading code on the Mac. `tools/logs/movebeat.log` now records what is needed to settle it; read it after the next occurrence and follow the table in the diagnosis section above. Note the auto-updater loop had a ~30s period, so it does not match a 10s symptom.
 
 - **Not yet verified on the real PC with a real Kinect.** Everything on the Mac side is measured and working, including a synthetic replay of the PC's exact packet format, but the split has not run against live hardware.
 - **`/movebeat/gate` does nothing but light an indicator.** On loss of tracking the sound freezes and drones. Needs a musical decision — mute, fade, or hold.
