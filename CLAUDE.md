@@ -2,7 +2,7 @@
 
 Final thesis project: movement to sound. A Kinect v2 tracks a body; the coordinates drive a virtual-analog synthesizer.
 
-## Current status (as of 2026-08-18)
+## Current status (as of 2026-08-22)
 
 | Piece | State |
 |---|---|
@@ -19,13 +19,86 @@ Final thesis project: movement to sound. A Kinect v2 tracks a body; the coordina
 | Controller device | **Working**, and rebuilt 2026-08-18 as a 6-slot mapping matrix — see below. Both input paths verified on the Mac: live Kinect OSC, and a built-in mock body |
 | Movement → sound mapping | **Any body part → any of the 24 synth parameters**, with a per-slot output range lock (2026-08-18). Replaces the four hardcoded features |
 | Hop 1 against real hardware | **Verified live from the Mac 2026-08-18** — ~26 Hz, 1144-byte bundles from `192.168.0.101`, `/mb/tracked` = 1, 24/25 joints at `trackingState` 2 |
-| The new mapping matrix against real hardware | **Not yet** — validated structurally only. The last open step |
+| The new mapping matrix against real hardware | **Not yet** — validated structurally only |
+| **Ableton Live is now the target** | **Decided 2026-08-22.** Reverses a documented decision — see below |
+| Zone layer: `[p mb_body]` + `[p mb_zones]` | **Built and verified 2026-08-22**, 16/16 tests. Not yet run in Max |
+| The nine mapping cells, MAP button, scene stepper | **Not built** — cannot exist outside Max for Live |
 
 ### Skeletal tracking — resolved (it was distance)
 
 The long "no body is ever tracked" mystery had nothing to do with software or hardware: **nobody was standing in the sensor's tracking range during the tests.** Kinect v2 needs roughly **2–3 m with the whole body in view** — it will not track someone sitting at the keyboard half a metre away. With a person at proper distance, bodies track and joint coordinates stream normally.
 
 Keep this in mind for every future "no data" report: check framing/distance *first* (`DepthBasics-D2D.exe` shows what the sensor actually sees), before suspecting code.
+
+## Where this is going now: one Ableton Live Set (2026-08-22)
+
+**The end goal changed, and it reverses what `ARCHITECTURE.md` and `BUILD_GUIDE.md` still say.**
+Both of those state that Ableton and Max for Live are deliberately out of scope. That was true
+while the synth was a standalone macOS instrument. It is no longer the plan, and those two
+documents need updating.
+
+The target is **one saved Live Set**, which is what the project gets presented from:
+
+- Both devices become **Max for Live devices** — `MoveBeatSynth.amxd` (Max Instrument) and
+  `MoveBeatController.amxd` (Max MIDI Effect).
+- Loops live in Session View, and **scenes are the song's sections**.
+- The dancer drives Live directly through the Live Object Model: three body zones mapped to
+  effect parameters and to scene launching.
+- The synth's notes come from **MIDI clips on its own track** — the dancer shapes timbre, not
+  pitch. That deliberately removes the hardest problem (playing pitches by dancing) from scope.
+
+### `synth/docs/ZONES.md` is the reference for all of it
+
+It holds the full specification — three zones, nine cells, the three modes, the MAP button, the
+input range, the scene stepper, loss-of-tracking behaviour, distance and framing, and the
+verification status of every piece. **Read it before touching anything zone-related**, the same
+way `MAPPING.md` governs the six-slot matrix.
+
+### What is built and what is not
+
+| Piece | State |
+|---|---|
+| `[p mb_body]` — body-relative coordinates | **Built, 7/7 verified.** Not yet run in Max |
+| `[p mb_zones]` — zones, hysteresis, all the timing | **Built, 9/9 verified.** Not yet run in Max |
+| Mock `handleft.y` slider + 12-toggle zone monitor | Built, so the layer can be exercised with no camera |
+| The nine cells: MAP, `live.remote~`, scene stepper | **Not built.** Needs M4L to exist at all |
+| The freeze rule | `mb_zones` emits the hand-busy pair; **nothing consumes it yet** |
+
+The zone layer is **purely additive** — `mb_sources` and the six slots are untouched and still
+work in absolute sensor metres.
+
+### ▶ The next step, in order
+
+1. **Five-minute check, no Ableton needed.** Open `MoveBeatController.maxpat`, pick **MOCK**, drag
+   the body sliders, watch the new toggle row light up. This is the first time the zone layer runs
+   in Max at all. **Check the thresholds first** — see the known issue below.
+2. **Build the Live Set** (the user's task, music production). Session View, Global Quantization
+   **1 Bar**, scenes as song sections, trailing scenes left empty, effects ready to map. Make the
+   song work by clicking scenes with a mouse *before* any camera is involved.
+3. **Convert both devices to `.amxd`** (the user's task — it is GUI work in Live that cannot be
+   done from a terminal). The riskiest unknown is whether `poly~` can find `mb_voice.maxpat`
+   inside a device; smoke-test that early rather than late.
+4. **Then build the nine cells** — MAP, `live.remote~`, the scene stepper. Read the Max for Live
+   Essentials LFO device first: the MAP button is a standard M4L idiom, not an invention, and a
+   working reference ships with Live Suite.
+
+## Verifying Max patches by replaying their own graph (2026-08-22)
+
+`synth/docs/verification/` now holds a technique worth reusing. `verify_body.py` and
+`verify_zones.py` **do not re-implement** the subpatchers. They load `MoveBeatController.maxpat`,
+walk the real object graph, and replay it under Max's own message semantics — outlets fire
+right-to-left, inlet 0 is hot except `gate` whose data inlet is the right one, `expr` cold inlets
+store, plus a virtual millisecond clock for `[del]`.
+
+So a mis-wired patchline **fails the tests**, which is the whole point: reading a patch does not
+tell you what it does, and the GUI does not show mis-wiring.
+
+`build_zone_layer.py` regenerates `mb_body` and `mb_zones` from a clean `HEAD` checkout. If either
+subpatcher needs structural change, edit the builder and re-run it rather than hand-editing JSON.
+
+> **Its limit, stated plainly:** the replay is a *model* of Max, not Max. If the model is wrong
+> somewhere, the tests pass while the patch misbehaves. The least certain assumptions are `[del]`
+> restarting on a repeated bang, and fan-out order where it was not forced with an explicit `[t]`.
 
 ## The two machines — read this first
 
@@ -242,6 +315,27 @@ advance for a string of length L (excluding the null) is `(L + 4) & ~3`.
 A free cross-check: the real bundle is exactly **1144 bytes** and consumes 1144/1144. If your
 decoder does not land on that, suspect the decoder first.
 
+### A state that other logic is hot on must re-propagate every frame
+
+Each hand's zone test in `mb_zones` first had a `[change]` after it, to avoid re-sending an
+unchanged value. That is a reasonable instinct and it was wrong here: the downstream combinations
+are hot on **one** hand's value, so filtering out "no change" meant the right hand going up never
+recomputed anything. Five of nine behaviour tests failed, and the patch looked entirely correct.
+
+`[change]` is safe on a value that only *drives* something. It is a bug on a value that something
+else *reads* while being triggered by a different source.
+
+### Do not re-serialise a .maxpat with sorted keys
+
+Max writes its JSON in insertion order with 4-space indent and no trailing newline. Rewriting the
+file with `json.dump(..., sort_keys=True)` reorders every key in all ~800 objects: functionally
+harmless, but it turns the git diff into thousands of lines and destroys the ability to review the
+change — in a project where reading the JSON *is* the verification method.
+
+Load with `object_pairs_hook=collections.OrderedDict` and dump with `indent=4` and no `sort_keys`.
+Then confirm semantically rather than trusting the line diff: parse both versions and check that
+every pre-existing box and patchline is byte-identical.
+
 ### Verify Max patches by capturing their UDP output
 
 The same rule already stated for the Windows app applies to the Max side, for a different reason: reading a patch does not tell you what it does, and the GUI does not show mis-wiring like the above. Bind a socket to the port, decode, and check the value *ranges* against what the maths predicts.
@@ -407,6 +501,11 @@ synth/             Max 9 (Mac) — two devices + shared DSP
   dsp/*.genexpr      gen~ core: oscillators, drive, Moog ladder filter
   docs/              ARCHITECTURE.md — parameter list and design rationale
                      MAPPING.md     — movement→parameter contract, tuning guide
+                     ZONES.md       — THE ZONE LAYER + THE ABLETON PLAN. Read this for
+                                      anything zone-, trigger- or Live-related
+    verification/    verify_body.py, verify_zones.py — replay the real .maxpat graphs
+                     build_zone_layer.py — regenerates mb_body + mb_zones from HEAD
+                     VERIFICATION_REPORT.md, verify_filter.py — the DSP filter proof
   build/             PRE-SPLIT single-patch version. Still works, untouched.
 tools/             Windows automation
   sync-loop.ps1              git poller: pull, build, relaunch
@@ -429,6 +528,9 @@ tools/             Windows automation
 Two Startup-folder shortcuts are installed, independent of each other:
 `MoveBeatAutoUpdate.lnk` (git poller) and `MoveBeatKinectApps.lnk` (Kinect apps).
 
+`synth/docs/ZONES.md` is the reference for the zone layer, the nine mapping cells and the Ableton
+Live plan — **read it before touching anything zone-related.**
+
 `synth/docs/ARCHITECTURE.md` is the reference for the synth's parameter names (`cutoff`, `resonance`, `drive`, `pw`, `outgain`…) and the DSP design rationale. `synth/docs/MAPPING.md` is the reference for the movement→parameter contract and for where to tune what. **Read both before touching anything in `synth/`.**
 
 ## Known issues / open decisions
@@ -446,7 +548,34 @@ Two Startup-folder shortcuts are installed, independent of each other:
 
 - **Hop 1 is verified against real hardware; the Max side is not.** On 2026-08-18 the PC's stream was decoded live from the Mac: ~26 Hz, 1144-byte bundles from `192.168.0.101`, `/mb/tracked` = 1, and 24 of 25 joints at `trackingState` 2 with plausible coordinates. So the PC, the sensor, the wired LAN and the OSC encoder are all good end to end. **The new 6-slot matrix has only been validated structurally** — JSON, patchline index bounds, inlet/outlet X ordering, subpatcher I/O counts, and the scaling maths checked against a reference implementation. It has not been run in Max against that stream.
 
+- **The zone thresholds are derived, not measured.** ⚠️ The most likely thing to be wrong. The
+  side zones trigger at 1.15 body lengths from the spine (roughly 58 cm), a figure reasoned from
+  anatomy and never checked against a real dancer. If the natural dance posture is wider than
+  that, the zones latch while standing still. **Check this first**, with the mock and then with a
+  real body. The thresholds are one line at the top of `[p mb_zones]`.
+
+- **The ABOVE threshold rides on `head.y`, and the head joint jitters.** Hysteresis covers small
+  noise; a large head-tracking glitch moves the boundary and could fire a zone.
+
+- **`Program.cs` still selects the first tracked body it finds.** Kinect v2 tracks up to six, and
+  the index is neither stable nor meaningfully ordered, so **anyone walking behind the performer
+  can take over the stream mid-piece.** It has never shown up because testing has been one person
+  alone in a room; in performance it is exactly what will happen. The fix belongs on the PC and
+  does not touch the OSC contract: lock onto a body and hold it until genuinely lost, preferring
+  the one nearest centre when re-selecting. This is a capture question, not a musical one, so it
+  does not violate the weak-machine rule.
+
+- **The freeze rule is emitted but not wired.** `mb_zones` outputs the hand-busy pair; gating the
+  two hand slots in the six-slot matrix means editing the verified path, and was deliberately left
+  as its own step rather than bundled with new work.
+
+- **`ARCHITECTURE.md` and `BUILD_GUIDE.md` both still say Ableton and Max for Live are out of
+  scope.** That is now false — see the Ableton section above. They need updating, and
+  `synth/build/MoveBeat_ableton_ves.amxd` needs resolving as part of it.
+
 - **Slot settings do not survive closing the patch.** `umenu` does not persist its selection, so the six destinations, ranges and curves must be re-picked each session. Making them stick needs `pattrstorage` (which would also give preset slots for switching mappings mid-performance). Not built — it is a real addition, not a tweak.
-- **`/movebeat/gate` does nothing but light an indicator.** On loss of tracking the sound freezes and drones. Needs a musical decision — mute, fade, or hold.
+- **`/movebeat/gate` does nothing but light an indicator.** On loss of tracking the sound freezes
+  and drones. The zone layer has now answered this for its own half — release switches, freeze
+  faders, block fire, let the loops keep playing — but nothing is wired for the synth's parameters.
 - **`synth/build/MoveBeat_ableton_ves.amxd` is a divergent fork**, not an export: a near-copy of the old patch with `notein`→`midiin` and `plugout~` added, carrying its own drifted parameter state. It also contradicts `ARCHITECTURE.md` and `BUILD_GUIDE.md`, which both state Ableton and Max for Live are deliberately out of scope. Decide whether to delete it or rebuild it properly from the new synth device.
 - **Fixed 2026-08-08:** the old `[p mb_mapping]` had a dangling right-hand-X gate, so `resonance` computed `abs(0 − lefthand.x)` and tracked one hand's distance from centre rather than the spread between the hands. Fixed in the old patch too, not only in the new controller.
