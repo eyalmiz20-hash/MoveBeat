@@ -433,9 +433,16 @@ Two Startup-folder shortcuts are installed, independent of each other:
 
 ## Known issues / open decisions
 
-- **The reported “crashes every ~10 s and restarts” symptom is not yet confirmed against a cause.** Reported 2026-08-18 from the PC. Every code path that can produce it has been fixed or instrumented (unhandled exceptions on the Kinect thread, `SocketException` from `osc.Send`, the watchdog null race, the null-stdin instant exit, and the auto-updater's kill-before-verify loop), but **none of it was observed on the live machine** — the diagnosis was made by reading code on the Mac. `tools/logs/movebeat.log` now records what is needed to settle it; read it after the next occurrence and follow the table in the diagnosis section above. Note the auto-updater loop had a ~30s period, so it does not match a 10s symptom.
+- **Fixed for now: the “crashes every ~10 s and restarts” symptom.** Reported 2026-08-18 from the PC
+  and not reproducing since — a **~25 minute run with no crash**, against an original failure
+  interval of about 10 seconds.
 
-  **First live evidence, 2026-08-18:** watched from the Mac, the PC streamed continuously for the whole observed window at ~26 Hz with a tracked body, and the sampled packets all carried the same UDP source port — i.e. one socket, so no process restart inside that window. That is a short window and not a clearance, but it is the first direct observation that the app runs steadily, and it argues the symptom is intermittent rather than constant.
+  The fixes landed as one batch: unhandled exceptions on the Kinect background thread,
+  `SocketException` from `osc.Send` (with `SIO_UDP_CONNRESET` switched off), the watchdog null race,
+  the null-stdin instant exit, and the auto-updater's kill-before-verify loop. **Which one was the
+  actual cause is therefore not attributed** — and does not need to be unless it comes back. If it
+  does, `tools/logs/movebeat.log` now records what settles it in one command; follow the table in the
+  diagnosis section above.
 
 - **Hop 1 is verified against real hardware; the Max side is not.** On 2026-08-18 the PC's stream was decoded live from the Mac: ~26 Hz, 1144-byte bundles from `192.168.0.101`, `/mb/tracked` = 1, and 24 of 25 joints at `trackingState` 2 with plausible coordinates. So the PC, the sensor, the wired LAN and the OSC encoder are all good end to end. **The new 6-slot matrix has only been validated structurally** — JSON, patchline index bounds, inlet/outlet X ordering, subpatcher I/O counts, and the scaling maths checked against a reference implementation. It has not been run in Max against that stream.
 
