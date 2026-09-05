@@ -228,6 +228,105 @@ subpatcher needs structural change, edit the builder and re-run it rather than h
 > somewhere, the tests pass while the patch misbehaves. The least certain assumptions are `[del]`
 > restarting on a repeated bang, and fan-out order where it was not forced with an explicit `[t]`.
 
+## Writing this up — the method is the contribution, not the feature list
+
+A thesis that lists what was built reads like a manual. What distinguishes this project is
+**how correctness was established**, on a system where almost nothing can be checked by looking
+at it: a Max patch's behaviour is invisible in its GUI, a Kinect stream is invisible without a
+decoder, and a Live device's state is invisible until you reopen the Set.
+
+Six practices did the work. Each one has at least one concrete episode behind it, and the episodes
+are what make the write-up specific rather than generic.
+
+### 1. Measure the artefact; do not reason about it
+
+Every hard question this project asked was settled by **decoding the real file or the real
+stream**, never by argument.
+
+| Question | What was decoded | What it settled |
+|---|---|---|
+| Is the OSC encoder correct? | a captured packet | byte-exact, 1144/1144 consumed |
+| Is the PC or the Max side at fault? | live UDP from the Mac | the PC was fine all along |
+| Is `.amxd` openable? | 110 stock Live devices | a 32-byte header, nothing encrypted |
+| Why did Live not save my mapping? | the `.als`, gunzipped | **Live saved correctly — the patch overwrote it** |
+
+The last one is the strongest example. Every plausible theory pointed at the parameter metadata.
+The file said otherwise in one line, and the real bug — a `loadbang` — was somewhere nobody would
+have looked.
+
+### 2. Read the reference implementation that is already on disk
+
+Repeatedly, the authoritative answer was sitting in an installed application.
+
+- `BodyBasics-D2D.exe` is the Kinect ground truth: if it tracks and this repo does not, the bug is here.
+- Ableton's own devices defined the `.amxd` container and the device-type codes.
+- Max's own object prototypes settled that `live.menu` outlet 1 is the item symbol — which is why
+  the `sprintf` path survived untouched and **not one patchline had to change**.
+
+Guessing that outlet would have meant rewriting six mapping rows for no reason.
+
+### 3. Replay the real graph rather than re-implementing it
+
+`verify_body.py` and `verify_zones.py` do not model what the subpatchers *should* do. They load
+`MoveBeatController.maxpat`, walk the actual object graph, and execute it under Max's own message
+semantics — right-to-left outlets, cold inlets that store, a virtual clock for `[del]`.
+
+So a mis-wired patchline **fails the tests**. That is the whole point: reading a patch does not
+tell you what it does, and the GUI does not show mis-wiring.
+
+> **State the limit too, and mean it.** The replay is a *model* of Max, not Max. If the model is
+> wrong somewhere, the tests pass while the patch misbehaves. Naming the least certain assumptions
+> — `[del]` restarting on a repeated bang, fan-out order where no `[t]` forces it — is more
+> convincing than claiming completeness.
+
+### 4. Generate artefacts; never hand-edit a derived copy
+
+`build_zone_layer.py`, `build_devices.py`, `build_presentation.py` all regenerate from source, and
+all are **idempotent** — three runs, identical bytes — so git only ever shows a real change.
+
+The counter-example is in the repo on purpose. `synth/build/MoveBeat_ableton_ves.amxd` is a
+hand-edited near-copy that drifted into a fork, and it is kept as the standing argument for the
+rule. The same failure has now appeared three times in three different costumes: OneDrive racing
+the build, that forked device, and Live's `Collect All and Save` freezing an imported copy.
+**One logical file in two places on disk, diverging silently** — worth naming as a recurring
+hazard rather than three separate anecdotes.
+
+### 5. Design for the failure you cannot recover from
+
+Not every risk is equal, and the write-up should say which one is not survivable.
+
+The head rule — *a hand above head height is in ABOVE, whatever its X* — exists because without it,
+reaching diagonally for an effect would advance the song. **You cannot un-skip a section in front
+of an audience.** Likewise the scene stepper's lockout waits for Live to report that the scene has
+actually begun, rather than trusting a millisecond timer.
+
+The pattern: a guard whose cost is a line of arithmetic and whose absence is unrecoverable is not
+a trade-off at all.
+
+### 6. Record the wrong turns
+
+The debugging detours are the most useful pages, because they are where the reasoning is visible.
+
+- **"No body is ever tracked"** consumed a long investigation and was **distance** — nobody was
+  standing 2–3 m from the sensor. Every "no data" report now checks framing first.
+- **"It crashes every ten seconds"** matched four unrelated faults. The fix was a log that tells
+  them apart in one command, not a guess at which one it was.
+- **`Start-Process -RedirectStandardOutput`** made a healthy app look dead, because it leaves stdin
+  as the null device and `Console.ReadLine()` returns instantly.
+- **The mock sliders could never light the zone monitor**, and the instruction telling you to try
+  sat in this file for two weeks. `[t b i]` reads a list's first element, so `valid` became
+  `int(joint.x)` = 0.
+
+Two claims in this document were also **wrong and corrected the same day**: that converting to Max
+for Live required GUI work, and that Live imports a copy on a plain save (it is `Collect All and
+Save`). Both are marked in place rather than quietly deleted — a document that never records being
+wrong cannot be trusted about anything else.
+
+### What the numbers are, when you need them
+
+~26–32 Hz capture · 1144-byte OSC bundle · 25 joints · 24 synth parameters · 6 mapping slots ·
+9 zone cells · 31 + 24 Live device parameters · 16/16 behaviour tests · 110 stock devices decoded.
+
 ## The two machines — read this first
 
 This project runs across two computers, and **which machine you are on changes what you should do.**
