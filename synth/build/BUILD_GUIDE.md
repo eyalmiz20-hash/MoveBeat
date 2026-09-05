@@ -1,23 +1,51 @@
-# MoveBeat Synth — Build Guide (gen~ + poly~ standalone Max 9 patch, no Ableton, no M4L, no RNBO)
+# MoveBeat Synth — Build Guide (gen~ + poly~ Max 9 patch)
+
+> # ⚠️ HISTORICAL — this guide describes a superseded build
+>
+> **Read this before following a single step.** This document is the
+> construction record for `build/MoveBeat.maxpat`, the **pre-split, single-patch**
+> version where the camera was wired straight into the engine. That patch still
+> exists and still works, and is deliberately kept for comparison — but it is
+> **not** what the project ships.
+>
+> Since then, two things happened:
+>
+> 1. **2026-08-08 — the patch was split into two devices.** The instrument
+>    (`synth/instrument/MoveBeatSynth.maxpat`) and the movement layer
+>    (`synth/controller/MoveBeatController.maxpat`) are now separate and talk over
+>    OSC. They share no files with `build/`.
+> 2. **2026-08-22 — the deliverable became one Ableton Live Set,** and on
+>    **2026-09-05** both halves were converted to Max for Live devices and verified
+>    playing inside Live.
+>
+> So the title's old promise of "no Ableton, no M4L" is **no longer the plan**.
+> See the repo-root `CLAUDE.md` for where things actually stand, `ZONES.md` for
+> the Live/zone layer, and `MAPPING.md` for the movement→parameter contract.
+>
+> **What is still worth reading here:** the `gen~` core, the ladder-filter
+> reasoning, the voice structure, and the parameter-by-parameter build notes.
+> The DSP did not change. Only the packaging and the surrounding architecture did.
 
 This guide turns the already-verified DSP core (`dsp/moog_ladder.genexpr`,
 `dsp/movebeat_core.genexpr`, both confirmed correct in
 `docs/verification/VERIFICATION_REPORT.md`) into a playable instrument using
-**only plain `gen~` and stock Max/MSP objects, running directly in Max 9 with
-no host application**. It assumes a full Max 9 license and nothing else —
-no Ableton Live, no Max for Live, no RNBO.
+**only plain `gen~` and stock Max/MSP objects**. It assumes a full Max 9
+license and nothing else — no RNBO.
 
-> **No Ableton, no M4L, no RNBO anywhere in this build.** We bought Max 9
-> standalone. A full Max license saves `gen~` patchers normally, runs `poly~`
-> polyphony natively, and takes MIDI straight from Max's own MIDI Setup (or
-> from an on-screen `kslider` for testing without a controller) — none of
-> that requires a host DAW. Audio leaves the patch through plain `dac~`, not
-> `plugout~`. Every object used below (`poly~`, `thispoly~`, `adsr~`,
+> **No RNBO anywhere in this build.** A full Max license saves `gen~` patchers
+> normally, runs `poly~` polyphony natively, and takes MIDI straight from Max's
+> own MIDI Setup (or from an on-screen `kslider` for testing without a
+> controller). Every object used below (`poly~`, `thispoly~`, `adsr~`,
 > `cycle~`, `line~`/`curve~`, `mtof~`, `notein`, `dial`, `umenu`, `toggle`,
 > `dac~`, etc.) is a stock Max/MSP object documented at docs.cycling74.com.
 > See `docs/ARCHITECTURE.md` for the full rationale and the "why gen~ only
 > for the filter" explanation (the Moog ladder needs single-sample feedback,
 > which only `gen~`'s `History` operator provides inside stock Max).
+>
+> **In the shipping device**, `notein` becomes `midiin`→`midiparse`→`unpack`
+> and `dac~`/`ezdac~` becomes `plugout~`. Those two substitutions are applied
+> automatically by `synth/docs/verification/build_devices.py` — you never make
+> them by hand, and the standalone patch keeps using `notein`/`ezdac~`.
 
 Work happens in this repo's `MoveBeat/synth/build/` folder so the Max
 project, the two patchers, and the docs that describe them sit together.
@@ -27,11 +55,13 @@ a UI workflow rather than an object (menu wording, panel layout), it is
 described by function so it stays correct across small Max version
 differences.
 
-> A stray `build/MoveBeat.amxd` may still exist from an earlier Ableton/M4L
-> plan — it is just the empty default Max for Live Instrument template with
-> nothing built inside it. It's no longer part of this build; the
-> deliverable described below is `MoveBeat.maxpat`, a plain patch. You can
-> ignore or delete the `.amxd` once `MoveBeat.maxpat` exists.
+> `build/MoveBeat_ableton_ves.amxd` sits in this folder and is **not** part of
+> this build, nor is it the device the project ships. It is a hand-edited
+> near-copy of `MoveBeat.maxpat` with `notein`→`midiin` and `plugout~` swapped in
+> by hand, carrying its own drifted parameter state. The real devices are
+> generated from the *split* patches by
+> `synth/docs/verification/build_devices.py`. Leave this file alone as history —
+> it is the reason devices are generated rather than hand-edited.
 
 ## 1. Overview: two patchers, one gen~ core
 

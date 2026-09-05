@@ -8,12 +8,16 @@ code was written, and this document is the agreement.
 over OSC. The zone layer sits **beside** it, not instead of it, and answers a different question:
 not "how does movement shape the sound", but "how does movement drive the Live Set".
 
-> **This document reverses a previously documented decision.** `ARCHITECTURE.md` and
-> `BUILD_GUIDE.md` both state that Ableton and Max for Live are deliberately out of scope. That
-> was true when the synth was a standalone macOS instrument. The project's stated end goal is now
-> a **saved Live Set** in which both devices live as Max for Live devices. Those two documents
-> need updating, and `synth/build/MoveBeat_ableton_ves.amxd` — already flagged as a divergent
-> fork — needs resolving as part of that.
+> **This document reversed a previously documented decision, and the reversal is now complete.**
+> `ARCHITECTURE.md` and `BUILD_GUIDE.md` used to state that Ableton and Max for Live were
+> deliberately out of scope — true when the synth was a standalone macOS instrument. **Both were
+> updated 2026-09-05**, and `synth/build/MoveBeat_ableton_ves.amxd` was resolved: it stays as
+> history, never used, as the cautionary example for why devices are generated and never
+> hand-edited.
+>
+> **Both halves became Max for Live devices on 2026-09-05 and were verified playing inside Live** —
+> generated from the `.maxpat` sources by `synth/docs/verification/build_devices.py`. So the
+> Live-side pieces below are no longer blocked on "M4L does not exist yet."
 
 ## Where this runs
 
@@ -554,5 +558,5 @@ inside Live, and revisit this afterwards.
 - **Whether the synth's parameters migrate from OSC to `live.remote~`.** Deferred deliberately —
   see above. The prize is that a danced performance becomes recordable and editable as Live
   automation, which is a real argument for eventually doing it.
-- **`ARCHITECTURE.md` and `BUILD_GUIDE.md` still say Ableton is out of scope**, and
-  `synth/build/MoveBeat_ableton_ves.amxd` is still an unresolved divergent fork.
+- ~~`ARCHITECTURE.md` and `BUILD_GUIDE.md` still say Ableton is out of scope, and
+  `MoveBeat_ableton_ves.amxd` is an unresolved divergent fork.~~ **Both closed 2026-09-05.**

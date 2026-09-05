@@ -1,13 +1,41 @@
-# MoveBeat Synth — Architecture (standalone Max 9, no Ableton, no M4L, no RNBO)
+# MoveBeat Synth — Architecture (Max 9 patch + generated Max for Live device, no RNBO)
 
 The MoveBeat synth is a virtual-analog subtractive synthesizer built around the
 Moog transistor-ladder filter we derived and verified in Chapter 3. It is a
-**standalone Max 9 patch** built with **plain `gen~` + stock Max/MSP objects**
-— no Ableton Live, no Max for Live, no RNBO. The DSP heart (oscillators + Moog
-filter) lives in `gen~`; everything around it (polyphony, envelopes, LFO,
-glide, MIDI, UI) is built from standard Max objects that save normally with a
-full Max 9 license and run directly inside Max, with no host application
-required.
+**Max 9 patch** built with **plain `gen~` + stock Max/MSP objects** — no RNBO.
+The DSP heart (oscillators + Moog filter) lives in `gen~`; everything around it
+(polyphony, envelopes, LFO, glide, MIDI, UI) is built from standard Max objects
+that save normally with a full Max 9 license.
+
+> ### ⚠️ 2026-09-05: this document used to say "no Ableton, no Max for Live"
+>
+> **That is no longer true, and the reversal is deliberate.** The project's
+> deliverable is now **one saved Ableton Live Set**, and both halves ship as Max
+> for Live devices. See the Ableton section of the repo-root `CLAUDE.md`, and
+> `ZONES.md` for the zone/scene layer that only exists inside Live.
+>
+> What has **not** changed is everything else in this document: the parameter
+> list, the ranges, the DSP rationale, the `gen~`-only-for-the-filter argument.
+> The instrument is the same instrument. Only its packaging changed.
+
+### The patch is the source; the device is generated from it
+
+`MoveBeatSynth.maxpat` remains the file you edit and the file the verification
+harness reads. `synth/docs/verification/build_devices.py` derives
+`MoveBeatSynth.amxd` from it, applying exactly two substitutions:
+
+| standalone patch | generated device |
+|---|---|
+| `notein` | `midiin` → `midiparse` → `unpack 0 0` |
+| `ezdac~` | `plugout~` |
+
+The on-screen `kslider` survives untouched, so the device is still playable
+from the keyboard inside its Max editor.
+
+**Never edit the `.amxd` in Live and save.** It forks from the patch silently,
+and the verification scripts keep reading the patch — which is precisely how
+`build/MoveBeat_ableton_ves.amxd` became a divergent copy. Structural edits go
+in the `.maxpat`; Ableton is for playing.
 
 > **Why no RNBO:** RNBO is a separate paid add-on used mainly for one-click
 > export to VST/AU/Web. We don't own it and don't need it now. A full Max 9
@@ -16,15 +44,22 @@ required.
 > and **gen~ Export Code** (gen~ → C++ → plugin/app). So dropping RNBO costs us
 > nothing today and keeps the future open.
 
-> **Why no Ableton / Max for Live:** we bought Max 9 standalone, not Live or
-> the M4L add-on. Nothing in this design needs a host DAW — Max 9 on its own
-> can take MIDI input (from a real controller via Max's own MIDI Setup, or
-> from an on-screen `kslider` for quick testing), run DSP through `dac~`, and
-> export a finished `.app`/`.exe` when done. Every object used below (`poly~`,
-> `thispoly~`, `adsr~`, `cycle~`, `line~`/`curve~`, `mtof~`, `notein`, `dial`,
-> `umenu`, `toggle`, `dac~`, etc.) is a stock Max/MSP object, not something
-> M4L adds — M4L only wraps a normal Max patch inside Live's plugin format,
-> which we are deliberately not doing.
+> **On Ableton / Max for Live — superseded 2026-09-05.** This box used to argue
+> that a host DAW was unnecessary. The instrument-level claim still holds: every
+> object used below (`poly~`, `thispoly~`, `adsr~`, `cycle~`, `line~`/`curve~`,
+> `mtof~`, `dial`, `umenu`, `toggle`) is a stock Max/MSP object, and the patch
+> still runs standalone in Max with no host. Nothing here *needs* Live.
+>
+> What changed is the **project's goal**, not the synth's requirements. The
+> deliverable became a Live Set because the piece needs song structure — scenes
+> as sections, loops, a dancer launching them — and that is Live's job, not a
+> synth's. M4L "only wraps a normal Max patch inside Live's plugin format", as
+> this box always said; we now do exactly that, and it costs two object
+> substitutions. See `build_devices.py`.
+>
+> **Verified end to end in Live on 2026-09-05:** the device loads, `poly~` finds
+> `mb_voice` through Max's search path, a MIDI clip plays it, and three mapping
+> slots drove three separate parameters audibly at once.
 
 A guiding rule shapes every decision: **the synth is a complete, standalone
 instrument that needs no camera.** It is played by MIDI (notes, velocity) and
@@ -192,9 +227,12 @@ MoveBeat/synth/
 > reusing the old name would have made every edit to the new voice silently change the old
 > patch too — and two files with the same basename in one search path are ambiguous to Max.
 
-> Note: an earlier `build/MoveBeat.amxd` (an empty Max for Live Instrument
-> template) predates this decision and is no longer part of the build — the
-> deliverable is `MoveBeat.maxpat`, a plain standalone patch.
+> Note: `build/MoveBeat_ableton_ves.amxd` predates all of this. It is **not** the
+> device the project ships — that one is generated by `build_devices.py` from
+> `MoveBeatSynth.maxpat`. The old file is a hand-edited near-copy of the
+> *pre-split* patch carrying its own drifted parameter state, and it references
+> `movebeat_voice` rather than `mb_voice`. Treat it as history; it is the
+> cautionary example for why devices are generated and never hand-edited.
 
 ## Build order
 
