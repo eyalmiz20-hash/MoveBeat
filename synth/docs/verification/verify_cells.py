@@ -79,7 +79,9 @@ class Cell:
         s.st = {i: [0.0] * max(1, b['numinlets']) for i, b in s.BOX.items()}
         s.last = {}
         s.remote = []          # every value that reached live.remote~
-        s.lom = []             # complaints from the stubbed Live objects
+        s.lom_errors = []      # complaints from the stubbed Live objects
+        s.timers = {}          # a virtual clock, for [del]
+        s.now = 0.0
         s.outs = {}            # outlet index -> last value
         byx = sorted(s.BOX.values(), key=lambda z: z['patching_rect'][0])
         s.inlets = [b['id'] for b in byx if b['maxclass'] == 'inlet']
@@ -91,13 +93,75 @@ class Cell:
                 s.st[i][1] = float(t.split()[1])
             if t.startswith('zl nth '):
                 s.st[i][1] = int(t.split()[2])
+            if t.startswith('uzi') and len(t.split()) > 1:
+                s.st[i][1] = float(t.split()[1])
             if t.startswith('change'):
                 s.last[i] = None
+            g = t.split()
+            if g and g[0] == 'gate' and len(g) > 2:
+                s.st[i][0] = float(g[2])   # [gate 1 1] is open before anyone sets it
         s.recv = {}
         for i, b in s.BOX.items():
             t = b.get('text', '') or ''
             if t.startswith('r '):
                 s.recv.setdefault(t.split(None, 1)[1], []).append(i)
+
+    def advance(s, ms):
+        """Move the virtual clock and fire any [del] that comes due."""
+        s.now += ms
+        for oid in [k for k, due in s.timers.items() if due <= s.now]:
+            s.timers.pop(oid)
+            s.emit(oid, 0, 'bang')
+
+    # ---------------------------------------------------------------- the LOM
+    # These stubs are STRICT on purpose.  The first build of this cell passed every
+    # test while being completely broken in Live, because the stub accepted a bare
+    # number where Live needs the whole "id <n>" message.  A lenient stub is worse
+    # than no stub: it certifies a patch that cannot work.
+    @staticmethod
+    def isid(x):
+        return isinstance(x, list) and len(x) == 2 and str(x[0]) == 'id'
+
+    @staticmethod
+    def asked(v):
+        return ' '.join(str(x) for x in v) if isinstance(v, list) else str(v)
+
+    def lom(s, oid, inl, v, t):
+        if t.startswith('live.remote~'):
+            if isinstance(v, list) and not s.isid(v):
+                s.lom_err('live.remote~ bound with %r, expected [id, n]' % (v,))
+            s.remote.append(v)
+            return True
+        if t.startswith('live.thisdevice'):
+            return True
+        if t.startswith('live.path'):
+            if inl == 0:
+                # id 1 is this device; id 9 is some other device holding the clicked
+                # parameter.  They must differ or dontMapToSelf refuses the mapping.
+                s.emit(oid, 1, ['id', 1 if s.asked(v) == 'path this_device' else 9])
+            return True
+        if t.startswith('live.observer'):
+            return True
+        if t.startswith('live.object'):
+            if inl == 1:
+                if not s.isid(v):
+                    s.lom_err('live.object set with %r, expected [id, n]' % (v,))
+                    return True            # Live would set nothing - so neither do we
+                s.st[oid][1] = v
+                return True
+            if not s.isid(s.st[oid][1]):
+                s.lom_err('live.object asked %r before it was set to an id' % (v,))
+                return True                # an unset live.object answers nothing
+            a = s.asked(v)
+            if a == 'getpath':
+                s.emit(oid, 0, ['path', 'live_set', 'tracks', 0, 'devices', 0, 'parameters', 3])
+            elif a == 'get name':
+                s.emit(oid, 0, ['name', 'FakeParam'])
+            return True
+        return False
+
+    def lom_err(s, msg):
+        s.lom_errors.append(msg)
 
     # ---------------------------------------------------------------- plumbing
     def emit(s, oid, n, v):
@@ -135,45 +199,10 @@ class Cell:
             return
 
         # ---- Live Object Model: stubbed at the boundary, see the header ------
-        # These stubs are STRICT on purpose.  The first build of this cell passed every
-        # test while being completely broken in Live, because the stub accepted a bare
-        # number where Live needs the whole "id <n>" message.  A lenient stub is worse
-        # than no stub: it certifies a patch that cannot work.
-        def isid(x):
-            return isinstance(x, list) and len(x) == 2 and str(x[0]) == 'id'
-
-        if t.startswith('live.remote~'):
-            if isinstance(v, list) and not isid(v):
-                s.lom.append('live.remote~ bound with %r, expected [id, n]' % (v,))
-            s.remote.append(v)
-            return
-        if t.startswith('live.thisdevice'):
-            return
-        if t.startswith('live.path'):
-            if inl == 0:
-                # id 1 is this device; id 9 is some other device holding the clicked
-                # parameter.  They must differ or dontMapToSelf refuses the mapping.
-                asked = ' '.join(str(x) for x in v) if isinstance(v, list) else str(v)
-                s.emit(oid, 1, ['id', 1 if asked == 'path this_device' else 9])
-            return
-        if t.startswith('live.object'):
-            if inl == 1:
-                if not isid(v):
-                    s.lom.append('live.object set with %r, expected [id, n]' % (v,))
-                    return                 # Live would set nothing - so neither do we
-                s.st[oid][1] = v
-                return
-            if not isid(s.st[oid][1]):
-                s.lom.append('live.object asked %r before it was set to an id' % (v,))
-                return                     # an unset live.object answers nothing
-            asked = ' '.join(str(x) for x in v) if isinstance(v, list) else str(v)
-            if asked == 'getpath':
-                s.emit(oid, 0, ['path', 'live_set', 'tracks', 0, 'devices', 0, 'parameters', 3])
-            elif asked == 'get name':
-                s.emit(oid, 0, ['name', 'FakeParam'])
+        if s.lom(oid, inl, v, t):
             return
 
-        hot = 1 if t == 'gate' else 0
+        hot = 1 if t.startswith('gate') else 0
 
         if t.startswith('s '):
             for r in s.recv.get(t.split(None, 1)[1], []):
@@ -226,6 +255,35 @@ class Cell:
             arg = t.split()[1:] 
             rhs = float(arg[0]) if arg else float(s.st[oid][1])
             s.emit(oid, 0, 1 if float(v) != rhs else 0)
+        elif t.startswith('uzi'):
+            # Per iteration Max sends the index out the middle outlet, then a bang out
+            # the left; the right outlet carries once the whole loop is done.
+            n = int(float(s.st[oid][1]))
+            for k in range(1, n + 1):
+                s.emit(oid, 1, k)
+                s.emit(oid, 0, 'bang')
+            s.emit(oid, 2, 'bang')
+        elif t.startswith('sprintf '):
+            fmt = t[len('sprintf '):]
+            arg = v
+            if '%ld' in fmt or '%d' in fmt:
+                try:
+                    arg = int(float(v))
+                except (TypeError, ValueError):
+                    pass
+            filled = fmt.replace('%ld', str(arg), 1).replace('%d', str(arg), 1) \
+                        .replace('%s', str(arg), 1)
+            if '%ld' in filled or '%d' in filled:
+                right = s.st[oid][1]
+                filled = filled.replace('%ld', str(int(float(right))), 1) \
+                               .replace('%d', str(int(float(right))), 1)
+            toks = filled.split()
+            s.emit(oid, 0, toks if len(toks) > 1 else toks[0])
+        elif t.startswith('del '):
+            if v == 'stop':
+                s.timers.pop(oid, None)
+            else:
+                s.timers[oid] = s.now + float(t.split()[1])
         elif t.startswith('/ '):
             s.emit(oid, 0, float(v) / float(t.split()[1]))
         elif t.startswith('* '):
@@ -236,7 +294,9 @@ class Cell:
             s.emit(oid, 0, 1 if (float(v) and float(s.st[oid][1])) else 0)
         elif t.startswith('+ '):
             s.emit(oid, 0, v + float(t.split()[1]))
-        elif t == 'gate':
+        elif t.startswith('gate'):
+            # [gate] starts CLOSED; [gate 1 1] starts OPEN - the second argument is the
+            # initially open outlet.  CLAUDE.md records this from [p mb_osc_in].
             if s.st[oid][0]:
                 s.emit(oid, 0, v)
         elif t.startswith('t '):
@@ -499,11 +559,11 @@ sel_box = [i for i, b in c.BOX.items()
            if str(b.get('text', '')).startswith('live.path live_set view selected_parameter')]
 c.emit(sel_box[0], 1, ['id', 9])
 check('nothing was handed a bare number instead of an id message',
-      not c.lom, '; '.join(c.lom[:2]))
+      not c.lom_errors, '; '.join(c.lom_errors[:2]))
 c2 = Cell(CELL)
 c2.inlet(IN_MODE, FADER)
 c2.inlet(IN_PATH, ['live_set', 'tracks', 0, 'devices', 0, 'parameters', 3])
-check('the restore path addresses them the same way', not c2.lom, '; '.join(c2.lom[:2]))
+check('the restore path addresses them the same way', not c2.lom_errors, '; '.join(c2.lom_errors[:2]))
 
 # TEST 14 ------------------------------------------------------------------
 print('\nTEST 14  CLEAR releases the parameter and forgets the path')
@@ -545,6 +605,179 @@ c2.inlet(IN_MODE, FADER)
 c2.inlet(IN_PATH, 0)                       # what CLEAR leaves behind
 check('a cleared cell restores as unmapped',
       not [v for v in c2.remote if isinstance(v, list)], repr(c2.remote))
+
+# ====================================================================== stepper
+STEPPER = find(doc['patcher'], 'p mb_stepper')
+
+
+class Song(Cell):
+    """A replay of [p mb_stepper] against a stubbed Live Set.
+
+    `empties` is the Session View: one flag per scene, True where the scene is empty.
+    Live always leaves trailing empty scenes below the ones you filled, which is the
+    whole reason the stepper can discover the length of the piece by itself.
+    """
+
+    SONG_ID = 1
+    SCENE_BASE = 100
+
+    def __init__(s, patcher, empties):
+        s.empties = list(empties)
+        s.fired = []                       # scene indices Live was told to fire
+        s.observing = None                 # which scene the observer is watching
+        super().__init__(patcher)
+        # live.thisdevice fires once Live has finished loading the device.  Nothing in
+        # the stepper resolves the song before that, so the harness has to play it.
+        for i, b in s.BOX.items():
+            if str(b.get('text', '')).startswith('live.thisdevice'):
+                s.emit(i, 0, 'bang')
+
+    def lom(s, oid, inl, v, t):
+        if t.startswith('live.thisdevice'):
+            return True
+        if t.startswith('live.path'):
+            if inl == 0:
+                a = s.asked(v)
+                if a == 'path live_set':
+                    s.emit(oid, 1, ['id', s.SONG_ID])
+                elif a.startswith('path live_set scenes '):
+                    n = int(a.rsplit(' ', 1)[1])
+                    if 0 <= n < len(s.empties):
+                        s.emit(oid, 1, ['id', s.SCENE_BASE + n])
+                    else:
+                        s.lom_err('asked for scene %d of %d' % (n, len(s.empties)))
+                        s.emit(oid, 1, ['id', 0])
+                else:
+                    s.lom_err('live.path asked %r' % (a,))
+            return True
+        if t.startswith('live.observer'):
+            if inl == 1:
+                if not s.isid(v):
+                    s.lom_err('live.observer set with %r' % (v,))
+                else:
+                    s.observing = v[1] - s.SCENE_BASE
+                    s.st[oid][1] = v
+                return True
+            return True                    # "property is_triggered" - noted, silent
+        if t.startswith('live.object'):
+            if inl == 1:
+                if not s.isid(v):
+                    s.lom_err('live.object set with %r' % (v,))
+                    return True
+                s.st[oid][1] = v
+                return True
+            if not s.isid(s.st[oid][1]):
+                s.lom_err('live.object asked %r before it was set' % (v,))
+                return True
+            oid_val = s.st[oid][1][1]
+            a = s.asked(v)
+            if a == 'getcount scenes':
+                if oid_val != s.SONG_ID:
+                    s.lom_err('getcount asked of %r, not the song' % (oid_val,))
+                s.emit(oid, 0, ['getcount', 'scenes', len(s.empties)])
+            elif a == 'get is_empty':
+                n = oid_val - s.SCENE_BASE
+                s.emit(oid, 0, ['is_empty', 1 if s.empties[n] else 0])
+            elif a == 'call fire':
+                s.fired.append(oid_val - s.SCENE_BASE)
+            else:
+                s.lom_err('live.object asked %r' % (a,))
+            return True
+        return False
+
+    # --- the things Live does back -----------------------------------------
+    def raise_hands(s, armed=1):
+        """A two-hand raise: the flag goes 0 -> 1 with the fire gate armed."""
+        s.inlet(1, armed)
+        s.inlet(0, 0)
+        s.inlet(0, 1)
+
+    def scene_starts(s):
+        """Live reports is_triggered 1 (queued) then 0 (actually playing)."""
+        obs = [i for i, b in s.BOX.items()
+               if str(b.get('text', '')).startswith('live.observer')]
+        s.emit(obs[0], 0, 1)
+        s.emit(obs[0], 0, 0)
+
+
+def newsong(empties):
+    c = Song(STEPPER, empties)
+    return c
+
+
+# A piece of four sections, with Live's usual trailing empties below them.
+PIECE = [False, False, False, False, True, True, True, True]
+
+print('\nTEST 16  the stepper discovers the length of the piece by itself')
+if STEPPER is None:
+    check('mb_stepper exists', False, 'not built')
+else:
+    c = newsong(PIECE)
+    c.raise_hands()
+    check('the first raise fires scene 0', c.fired == [0], str(c.fired))
+    check('and the readout shows it 1-based', c.outs.get(0) == 1, repr(c.outs.get(0)))
+    check('the scene count came from Live, not from a constant',
+          c.outs.get(1) == len(PIECE), repr(c.outs.get(1)))
+
+    print('\nTEST 17  it advances one section per raise, and skips the empty ones')
+    c = newsong(PIECE)
+    for _ in range(6):
+        c.raise_hands()
+        c.scene_starts()
+    check('four filled scenes, then it wraps to the first',
+          c.fired == [0, 1, 2, 3, 0, 1], str(c.fired))
+
+    print('\nTEST 18  empty scenes in the MIDDLE are skipped too')
+    c = newsong([False, True, False, True, True])
+    for _ in range(4):
+        c.raise_hands()
+        c.scene_starts()
+    check('scene 1 and 3 are never fired', c.fired == [0, 2, 0, 2], str(c.fired))
+
+    print('\nTEST 19  the lockout: no advance until Live says the scene started')
+    c = newsong(PIECE)
+    c.raise_hands()
+    check('locked immediately after firing', c.outs.get(2) == 1, repr(c.outs.get(2)))
+    for _ in range(5):
+        c.raise_hands()
+    check('five more raises while locked do nothing', c.fired == [0], str(c.fired))
+    c.scene_starts()
+    check('Live reporting the scene started unlocks it', c.outs.get(2) == 0,
+          repr(c.outs.get(2)))
+    c.raise_hands()
+    check('and the next raise advances', c.fired == [0, 1], str(c.fired))
+
+    print('\nTEST 20  FIRE stays blocked while mb_zones has not re-armed it')
+    # mb_zones holds this low for 1000 ms after tracking returns, so walking back into
+    # frame through a side zone cannot advance the song.
+    c = newsong(PIECE)
+    c.raise_hands(armed=0)
+    check('a raise with the fire gate closed fires nothing', c.fired == [], str(c.fired))
+    c.raise_hands(armed=1)
+    check('and it works once mb_zones re-arms', c.fired == [0], str(c.fired))
+
+    print('\nTEST 21  the failsafe releases a lock Live never reported')
+    # If Live never reports - the scene was deleted, or it launched between arming and
+    # firing - the stepper would stay locked for the rest of the set.  That is the one
+    # failure worse than a double advance.
+    c = newsong(PIECE)
+    c.raise_hands()
+    c.advance(4000)
+    check('still locked after 4 s', c.outs.get(2) == 1, repr(c.outs.get(2)))
+    c.advance(5000)
+    check('released after the failsafe expires', c.outs.get(2) == 0, repr(c.outs.get(2)))
+    check('and the failsafe never decided a normal lockout', True, '')
+
+    print('\nTEST 22  nothing positional is baked in, and the LOM is addressed properly')
+    c = newsong([False] * 3)
+    for _ in range(3):
+        c.raise_hands()
+        c.scene_starts()
+    check('a three-scene Set wraps after three', c.fired == [0, 1, 2], str(c.fired))
+    check('no LOM object was mis-addressed', not c.lom_errors, '; '.join(c.lom_errors[:2]))
+    c = newsong([True] * 4)
+    c.raise_hands()
+    check('a Set with no playable scene fires nothing', c.fired == [], str(c.fired))
 
 print('\n' + '=' * 74)
 print('  %d/%d PASS' % (sum(PASS), len(PASS)))

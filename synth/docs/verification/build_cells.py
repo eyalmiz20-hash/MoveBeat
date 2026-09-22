@@ -492,6 +492,242 @@ def build_cell(appversion, cellid, span):
     return finish([80, 80, 1700, 1130])
 
 
+def build_stepper(appversion):
+    """[p mb_stepper] - the one FIRE cell, ABOVE x two hands.
+
+    Each two-hand raise advances the song by one scene.  The current scene loops until
+    the next raise; past the last one it wraps to the first, so "restart the piece" is
+    not a separate binding - it is the same one wrapping.
+
+    NOTHING POSITIONAL IS BAKED IN.  The scene count is asked of Live on every raise
+    with `getcount scenes`, and each candidate's `is_empty` is read live.  Live always
+    leaves trailing empty scenes below the ones you filled, so skipping them means the
+    stepper discovers on its own how long the piece is.  Add a section in Live and it
+    is simply there.  (ZONES.md: "Never bake in positional numbers.")
+
+    THE LOCKOUT IS LIVE'S REPORT, NOT A TIMER.  After firing, a live.observer watches
+    that scene's `is_triggered`: 1 while it is queued and blinking, 0 the moment it
+    actually starts.  The stepper unlocks on the 0.  With Global Quantization at 1 Bar
+    that is about a bar of immunity - lower and raise your arms quickly and it simply
+    does not count.  An accidental double advance skips a whole section in front of an
+    audience and there is no way back, which is why this guard matters more than any
+    other in the document.
+
+    INLETS   0 fire flag (abvB)   1 fire armed (mb_zones outlet 2)
+    OUTLETS  0 current scene, 1-based   1 scene count   2 locked 0/1
+    """
+    box, obj, cmt, msg, L, finish = newsub(appversion)
+
+    for i, t in enumerate([
+            'mb_stepper - THE SCENE STEPPER.  ABOVE x two hands advances the song.',
+            'The scene list is queried live on every raise, empty scenes are skipped, and',
+            'the end wraps to the beginning.  Nothing here knows how long the piece is.']):
+        cmt(t, 20, 8 + i * 20, 720)
+
+    IN = []
+    for x, n in zip([30, 200], ['fire flag (abvB)', 'fire armed']):
+        IN.append(box('inlet', x, 100, 30, 30, None, 0, 1))
+        cmt(n, x, 76, 200)
+
+    # ---- the song object, resolved once ------------------------------------
+    cmt('live.thisdevice, never loadbang: it fires after Live has finished loading.',
+        430, 76, 700)
+    ltd = obj('live.thisdevice', 430, 110, 140, 1, 3, ['bang', 'bang', ''])
+    psong = msg('path live_set', 430, 150, 130)
+    L(ltd, 0, psong, 0)
+    init0 = msg('0', 600, 150, 40)
+    L(ltd, 0, init0, 0)                    # report "not locked" before anything happens
+    lpsong = obj('live.path', 430, 190, 90, 1, 3, ['', '', ''])
+    L(psong, 0, lpsong, 0)
+    tsong = obj('t b l', 430, 230, 80, 1, 2, ['bang', ''])
+    L(lpsong, 1, tsong, 0)
+    losong = obj('live.object', 430, 310, 110, 2, 2, ['', ''])
+    L(tsong, 1, losong, 1)                 # the id message, intact - see CLAUDE.md
+
+    # ---- a raise, if armed and not locked ----------------------------------
+    cmt('A rising edge only.  mb_zones has already committed the two-hand state over',
+        30, 140, 700)
+    cmt('200 ms, so this cannot flicker on the way up.',
+        30, 160, 700)
+    ech = obj('change -1', 30, 190, 90, 2, 1, ['int'])
+    L(IN[0], 0, ech, 0)
+    esel = obj('sel 1', 30, 230, 70, 2, 2, ['bang', ''])
+    L(ech, 0, esel, 0)
+    gArm = obj('gate', 30, 270, 80, 2, 1, [''])
+    L(IN[1], 0, gArm, 0)                   # blocked for 1000 ms after tracking returns
+    L(esel, 0, gArm, 1)
+    flock = obj('f 0.', 200, 190, 60, 2, 1, ['float'])
+    nlock = obj('== 0', 200, 230, 60, 2, 1, ['int'])
+    L(flock, 0, nlock, 0)
+    cmt('gate 1 1 - OPEN by default.  A bare [gate] starts closed and flock does not',
+        200, 270, 700)
+    cmt('emit until something locks, so the first raise of the set could never pass.',
+        200, 290, 700)
+    gLock = obj('gate 1 1', 30, 310, 80, 2, 1, [''])
+    L(nlock, 0, gLock, 0)
+    L(gArm, 0, gLock, 1)
+
+    req = obj('t b b b', 30, 350, 110, 1, 3, ['bang'] * 3)
+    L(gLock, 0, req, 0)
+
+    # ---- ask Live how many scenes there are, every time --------------------
+    cmt('Asked on every raise rather than cached, so adding a section in Live needs no',
+        600, 350, 700)
+    cmt('refresh and nothing can go stale.',
+        600, 370, 700)
+    zero = msg('0', 200, 390, 40)
+    L(req, 2, zero, 0)                     # 1st: nothing found yet this raise
+    ffound = obj('f 0.', 200, 430, 60, 2, 1, ['float'])
+    L(zero, 0, ffound, 0)
+    nfound = obj('== 0', 200, 470, 60, 2, 1, ['int'])
+    L(ffound, 0, nfound, 0)
+
+    gcnt = msg('getcount scenes', 430, 390, 150)
+    L(req, 1, gcnt, 0)                     # 2nd: how many scenes?
+    L(gcnt, 0, losong, 0)
+    rcnt = obj('route getcount', 430, 430, 130, 2, 2, ['', ''])
+    L(losong, 0, rcnt, 0)
+    ncnt = obj('zl nth 2', 430, 470, 90, 2, 2, ['', ''])
+    L(rcnt, 0, ncnt, 0)
+    tcnt = obj('t i i', 430, 510, 80, 1, 2, ['int', 'int'])
+    L(ncnt, 0, tcnt, 0)
+    fcnt = obj('f 0.', 600, 550, 60, 2, 1, ['float'])
+    L(tcnt, 1, fcnt, 1)                    # remember it for the modulo
+
+    uzi = obj('uzi 1', 30, 590, 80, 2, 3, ['bang', 'int', 'bang'])
+    L(tcnt, 0, uzi, 1)                     # how many candidates to try
+    L(req, 0, uzi, 0)                      # 3rd: walk forward from the current scene
+
+    # ---- candidate = (current + k) mod count -------------------------------
+    fcur = obj('f -1.', 780, 550, 70, 2, 1, ['float'])
+    cmt('current scene, 0-based.  Starts at -1 so the very first raise fires scene 0.',
+        860, 552, 700)
+    cmt('[f] holds silently - bang current and count into the cold inlets first.',
+        300, 600, 700)
+    tk = obj('t i b', 30, 600, 80, 1, 2, ['int', 'bang'])
+    L(uzi, 1, tk, 0)
+    cand = obj('expr ($i1 + $i2) % $i3', 30, 640, 260, 3, 1, ['int'])
+    L(tk, 1, fcur, 0)                      # 1st: emit them
+    L(tk, 1, fcnt, 0)
+    L(fcur, 0, cand, 1)
+    L(fcnt, 0, cand, 2)
+    L(tk, 0, cand, 0)                      # 2nd: and now the candidate number
+    tcand = obj('t i i', 30, 680, 80, 1, 2, ['int', 'int'])
+    L(cand, 0, tcand, 0)
+    fcand = obj('f 0.', 300, 720, 60, 2, 1, ['float'])
+    L(tcand, 1, fcand, 1)                  # hold it while we ask about it
+
+    # ---- is that scene empty? ----------------------------------------------
+    cmt('Live always leaves trailing empty scenes below the ones you filled, so skipping',
+        600, 680, 700)
+    cmt('them is what lets the stepper discover the length of the piece by itself.',
+        600, 700, 700)
+    spath = obj('sprintf path live_set scenes %ld', 30, 720, 250, 1, 1, [''])
+    L(tcand, 0, spath, 0)
+    lpsc = obj('live.path', 30, 760, 90, 1, 3, ['', '', ''])
+    L(spath, 0, lpsc, 0)
+    tsc = obj('t b l', 30, 800, 80, 1, 2, ['bang', ''])
+    L(lpsc, 1, tsc, 0)
+    losc = obj('live.object', 30, 880, 110, 2, 2, ['', ''])
+    L(tsc, 1, losc, 1)
+    gempty = msg('get is_empty', 30, 840, 120)
+    L(tsc, 0, gempty, 0)
+    L(gempty, 0, losc, 0)
+    rempty = obj('route is_empty', 30, 920, 130, 2, 2, ['', ''])
+    L(losc, 0, rempty, 0)
+    selem = obj('sel 0', 30, 960, 70, 2, 2, ['bang', ''])
+    L(rempty, 0, selem, 0)                 # 0 = not empty = playable
+
+    gfirst = obj('gate', 30, 1000, 80, 2, 1, [''])
+    L(nfound, 0, gfirst, 0)                # only the first playable one counts
+    L(selem, 0, gfirst, 1)
+    tfirst = obj('t b b', 30, 1040, 80, 1, 2, ['bang', 'bang'])
+    L(gfirst, 0, tfirst, 0)
+    one = msg('1', 200, 1040, 40)
+    L(tfirst, 1, one, 0)                   # 1st: close the gate behind us
+    L(one, 0, ffound, 0)
+    L(tfirst, 0, fcand, 0)                 # 2nd: and that is the scene to fire
+
+    # ---- fire it ------------------------------------------------------------
+    cmt('Order matters: remember it, resolve it, arm the observer, and only then fire.',
+        430, 1080, 700)
+    tfire = obj('t i i i', 30, 1090, 110, 1, 3, ['int', 'int', 'int'])
+    L(fcand, 0, tfire, 0)
+    L(tfire, 2, fcur, 1)                   # 1st: this is the current scene now
+    fpath = obj('sprintf path live_set scenes %ld', 30, 1130, 250, 1, 1, [''])
+    L(tfire, 1, fpath, 0)                  # 2nd: resolve it and arm the observer
+    lpf = obj('live.path', 30, 1170, 90, 1, 3, ['', '', ''])
+    L(fpath, 0, lpf, 0)
+    tf = obj('t b l l', 30, 1210, 100, 1, 3, ['bang', '', ''])
+    L(lpf, 1, tf, 0)
+    lof = obj('live.object', 30, 1330, 110, 2, 2, ['', ''])
+    L(tf, 2, lof, 1)
+    obs = obj('live.observer', 300, 1330, 120, 2, 2, ['', ''])
+    L(tf, 1, obs, 1)
+    ptrig = msg('property is_triggered', 300, 1290, 190)
+    L(tf, 0, ptrig, 0)
+    L(ptrig, 0, obs, 0)
+
+    cfire = msg('call fire', 30, 1290, 100)
+    L(tfire, 0, cfire, 0)                  # 3rd: fire
+    L(cfire, 0, lof, 0)
+
+    # ---- and lock until Live says it has started ---------------------------
+    cmt('The observer reports is_triggered: 1 while the scene is queued and blinking, 0',
+        600, 1380, 720)
+    cmt('when it actually starts.  Unlocking on that 0 is the whole guard - no timer',
+        600, 1400, 720)
+    cmt('decides it.  The listener is opened only AFTER firing, so the observer\'s own',
+        600, 1420, 720)
+    cmt('report at the moment it is armed cannot unlock it straight away.',
+        600, 1440, 720)
+    lk = obj('t b b', 30, 1380, 80, 1, 2, ['bang', 'bang'])
+    L(cfire, 0, lk, 0)
+    lock1 = msg('1', 30, 1420, 40)
+    L(lk, 1, lock1, 0)
+    L(lock1, 0, flock, 0)
+
+    tobs = obj('t i', 300, 1380, 60, 1, 1, ['int'])
+    L(obs, 0, tobs, 0)
+    gunlock = obj('gate', 300, 1420, 80, 2, 1, [''])
+    L(flock, 0, gunlock, 0)                # only while we are actually locked
+    L(tobs, 0, gunlock, 1)
+    selstart = obj('sel 0', 300, 1460, 70, 2, 2, ['bang', ''])
+    L(gunlock, 0, selstart, 0)
+    lock0 = msg('0', 300, 1500, 40)
+    L(selstart, 0, lock0, 0)
+    L(lock0, 0, flock, 0)
+    L(init0, 0, flock, 0)
+
+    # A failsafe, and named as one.  If Live never reports the change - the scene was
+    # deleted, or it launched between arming and firing - the stepper would stay locked
+    # for the rest of the performance.  That is the one failure worse than a double
+    # advance, so a long timer releases it.  It never decides the normal lockout.
+    cmt('FAILSAFE only.  If Live never reports, the stepper would stay locked for the',
+        600, 1500, 720)
+    cmt('rest of the set - the one failure worse than a double advance.',
+        600, 1520, 720)
+    fs = obj('del 8000', 30, 1460, 90, 2, 1, ['bang'])
+    L(lk, 0, fs, 0)
+    L(fs, 0, lock0, 0)
+    stop = msg('stop', 430, 1500, 60)
+    L(selstart, 0, stop, 0)
+    L(stop, 0, fs, 0)
+
+    # ---- outlets -------------------------------------------------------------
+    OUT = []
+    for x, n in zip([30, 200, 370], ['current scene, 1-based', 'scene count', 'locked']):
+        OUT.append(box('outlet', x, 1600, 30, 30, None, 1, 0))
+        cmt(n, x, 1630, 200)
+    disp = obj('expr $i1 + 1', 30, 1560, 120, 1, 1, ['int'])
+    L(tfire, 2, disp, 0)
+    L(disp, 0, OUT[0], 0)
+    L(tcnt, 1, OUT[1], 0)
+    L(flock, 0, OUT[2], 0)
+
+    return finish([80, 80, 1700, 1700])
+
+
 # ----------------------------------------------------------------- [p mb_zone_panel]
 
 # Where each cell sits in the 3 x 3 grid, and which hand column feeds it.
@@ -739,6 +975,50 @@ def build_panel(appversion):
         L(vfmt, 0, vset, 0)
         L(vset, 0, vshow, 0)
 
+    # ---- the scene stepper, at ABOVE x two hands ----------------------------
+    # The one FIRE cell.  It has no MAP button and no FROM/TO: it does not drive a
+    # parameter, it advances the song.  ZONES.md: "ABOVE x two hands -> the structure
+    # of the piece.  Everything else -> the sound of the piece."
+    spx, spy = GX + 2 * COLW, GY
+    box('comment', 30, 1500, 160, 20, 'SCENE STEPPER', 1, 0, extra=OD([
+        ('presentation', 1), ('presentation_rect', [float(spx), float(spy), 150.0, 15.0]),
+        ('fontsize', 9.0), ('varname', 'mbz_steplabel')]))
+    scene_disp = box('comment', 30, 1530, 120, 20, '-', 1, 0, extra=OD([
+        ('presentation', 1),
+        ('presentation_rect', [float(spx), float(spy + 17), 66.0, 15.0]),
+        ('fontsize', 9.0), ('varname', 'mbz_scene')]))
+    box('comment', 200, 1530, 60, 20, 'scene', 1, 0, extra=OD([
+        ('presentation', 1),
+        ('presentation_rect', [float(spx), float(spy + 34), 44.0, 15.0]),
+        ('fontsize', 9.0), ('varname', 'mbz_scenelab')]))
+    fire_lamp = box('toggle', 30, 1560, 20, 20, None, 1, 1, ['int'], extra=OD([
+        ('presentation', 1),
+        ('presentation_rect', [float(spx + 100), float(spy + 18), 13.0, 13.0]),
+        ('varname', 'mbz_firelamp')]))
+    lock_lamp = box('toggle', 60, 1560, 20, 20, None, 1, 1, ['int'], extra=OD([
+        ('presentation', 1),
+        ('presentation_rect', [float(spx + 124), float(spy + 18), 13.0, 13.0]),
+        ('varname', 'mbz_locklamp')]))
+    box('comment', 90, 1560, 90, 20, 'raise   locked', 1, 0, extra=OD([
+        ('presentation', 1),
+        ('presentation_rect', [float(spx + 76), float(spy + 34), 74.0, 15.0]),
+        ('fontsize', 9.0), ('varname', 'mbz_lamplab')]))
+
+    stepper = obj('p mb_stepper', 30, 1600, 130, 2, 3, ['', '', ''])
+    L(uf, FLAGS.index('abvB'), stepper, 0)
+    L(uf, FLAGS.index('abvB'), fire_lamp, 0)
+    L(IN[3], 0, stepper, 1)                # fire-armed: the 1000 ms block after tracking
+    L(stepper, 2, lock_lamp, 0)
+
+    # "3 / 8", built from the two outlets.  sprintf's right inlet is cold, so the count
+    # is in place before the scene number fires it.
+    sfmt = obj('sprintf %ld / %ld', 30, 1660, 150, 2, 1, [''])
+    L(stepper, 1, sfmt, 1)
+    L(stepper, 0, sfmt, 0)
+    sset = obj('prepend set', 30, 1700, 110, 1, 1, [''])
+    L(sfmt, 0, sset, 0)
+    L(sset, 0, scene_disp, 0)
+
     # ---- a mock body, right here in the window ------------------------------
     # The real mock sliders live at the root and are not in the device's presentation,
     # so testing meant opening the Max editor next to Live.  These four drive the same
@@ -858,6 +1138,8 @@ def main():
         if b['box'].get('text') == 'p mb_cell':
             b['box']['patcher'] = build_cell(appversion, nth + 1, spans[nth])
             nth += 1
+        elif b['box'].get('text') == 'p mb_stepper':
+            b['box']['patcher'] = build_stepper(appversion)
 
     panel = rootbox(root, nid(), 'newobj', 4, 1, [X0, Y0 + 90, 160, 22],
                     'p mb_zone_panel', [''], panelpatch,
