@@ -34,7 +34,122 @@ Also worth a line in Chapter 5.2: the nine cells **cannot** fit the ~169 px Live
 they live in a floating window opened with `[pcontrol]` — which is why there are now two
 screenshots to take, not one.
 
+**Everything the book still needs — which section, which screenshot, what to write — is set out
+in "FINISHING THE BOOK" immediately below. Work from that.**
+
 ---
+
+## ▶ THE USER'S PLAN FROM HERE (agreed 2026-09-22, end of session)
+
+1. **Test the whole zone layer in Live.** Nothing in it has been watched running.
+2. **Build the Live Set for the presentation** — music production, the user's own work.
+3. **Finish the book.**
+
+Everything below serves those three, in order.
+
+## ▶ THE LIVE TEST — do this first, before any music
+
+Nothing in the zone layer has ever been watched running. It is proven only against a model of Max
+and a stubbed Live Set. **Expect to find things; that is what this session is for.**
+
+### Before you start
+
+| | |
+|---|---|
+| Re-drag `MoveBeatController.amxd` | Live uses its own imported copy. The single most likely reason a change appears to do nothing |
+| `Input` → **MOCK - sliders only** | A freshly dragged device resets this to **LIVE**, and in LIVE with no camera `valid` is 0 and **nothing can move** |
+| **The BODY lamp must be lit** | Bottom row of the device panel. Dark = no body = nothing will happen, however far you drag |
+| Global Quantization → **1 Bar** | The stepper's lockout is about a bar of immunity at this setting |
+
+### The order to test in
+
+1. **A cell, end to end.** Open `ZONE MAPPING`. Press `MAP` on LEFT SIDE × L hand, click a knob
+   on an audio effect. The name appears in the cell *and* in the device panel's bottom row, and
+   the button releases itself. Drag `left hand X` to the far left: the row's lamp lights and the
+   value readout runs 0.00 → 1.00 with the knob following.
+2. **FROM / TO.** Set 20 and 60. The knob must never leave that band.
+3. **Leave and return.** Drag out of the zone — the knob holds. Drag back — it follows again
+   immediately. (There is no pickup any more; it was removed today.)
+4. **SWITCH.** Same two ends: TO in the zone, FROM on leaving.
+5. **`×` clears a mapping**, and the knob returns to Live's control.
+6. **Save the Set, close Live, reopen.** Every mapping must come back. **Never confirmed.**
+7. **The stepper.** Session View with, say, four filled scenes and Live's trailing empties.
+   Raise both hands above your head: scene 1 fires and the lock lamp lights. Raise again
+   immediately: **nothing happens.** Once the scene is playing, the next raise advances. After
+   the last filled scene it wraps to the first.
+8. **The acceptance test from ZONES.md.** Walk out of frame, wait, walk back in through a side
+   zone: loops still playing, no effect latched, no parameter jumped, **the song not advanced.**
+
+### If something does not work
+
+The order that has actually paid off, three times today: check `Input` and the BODY lamp, then
+read the value readout in the cell (a constant means the movement span does not overlap the
+zone), then open the Max console. The five-second checks first.
+
+## ▶ FINISHING THE BOOK — what to write, and what to photograph
+
+The device is finished; the chapter describing it is not. Work through this list.
+
+### Text to change — section 3.3.6
+
+Three statements in the current text are now wrong. Each has a concrete reason, and the reason is
+the interesting part — **write the reason, not just the correction.**
+
+| Replace | With, in a sentence or two |
+|---|---|
+| the **SET RANGE** button and the per-cell input range | The zone already fixes how much movement is available — a side zone begins at 1.15 body lengths and an arm reaches about 1.79 — so the span is baked into each cell and there is nothing to calibrate. One fewer control on screen. |
+| "Live's mapping already provides the output range — use Live's" | True of a MIDI mapping, false of `live.remote~`: it seizes the parameter and drives it from a bare 0..1 signal, and there is **no Min/Max anywhere in Live** for it. The cell therefore carries `FROM %` / `TO %`. Ableton hit the same wall — their own abstraction is called `Abl.MapWithScaledOuput.maxpat` and runs `[clip~ 0. 1.]` → `[scale~ 0. 1. 0. 1.]` → `[live.remote~]`. |
+| **FADER pickup is mandatory** | Removed. It latched cells permanently: leaving a side zone drags the fader to exactly 0.00, and "release when the movement crosses the held value" is then true for no value at all, so the cell died after one use. Moved to Chapter 4. |
+
+### Text to add — two paragraphs worth having
+
+Both are episodes, which is what makes a methods chapter specific rather than generic.
+
+- **"Read the reference implementation" has a failure mode.** The plan said to read Max for Live
+  Essentials' LFO. In Live 12 that device is **encrypted** — 25 of 139 stock devices are. The
+  method survived only because two other shipped devices (`Step Arp`, `Vector Map`) turned out to
+  be readable and carried the same abstraction. The advice was right; the specific artefact was
+  not, and the difference is worth a paragraph.
+- **A lenient test stub certifies a broken patch.** `verify_cells.py` reported **29/29 while the
+  device could not map anything at all in Live**, because the stub accepted a bare number where
+  Live needs the whole `id <n>` message. Making the stubs strict — an unset `live.object` now
+  answers nothing — drops the broken build to 22/24. This belongs next to the existing
+  "state the limit too, and mean it" paragraph: it is the sharpest example in the project of the
+  replay method certifying something untrue.
+
+### Chapter 4 — future work gained three entries
+
+1. **FADER pickup**, with the clip-edge latch explained — it is a good example of a guard whose
+   degenerate case is invisible in the arithmetic.
+2. **Name verification on restore.** A mapping is stored as a positional path
+   (`live_set tracks 0 devices 0 parameters 3`). Delete an effect, put another in the same slot,
+   and the path still resolves — it binds to whatever is there now, silently. Storing the
+   parameter's name alongside the path and checking it on load would close this.
+3. **The freeze rule** (a hand in a zone freezes its six-slot row) — still emitted by `mb_zones`
+   and still consumed by nothing.
+
+### Screenshots — five, and what each is for
+
+Take them **after** the Live test, with a real Set loaded so nothing on screen is empty.
+
+| # | What | How | Caption should say |
+|---|---|---|---|
+| 1 | **The device panel**, 454 × 168 | The controller in the Live device strip, with a mapping made and the BODY lamp lit | that the whole device is this small, and that the bottom row reports what is mapped and whether a body is present |
+| 2 | **The mapping window**, 526 × 281 | Press `ZONE MAPPING`. Have three or four cells mapped to real effects so the names are readable | that it is the book's own table made literal: three zones down, left hand / right hand / both hands across |
+| 3 | **One cell, close up** | Crop from #2 | the four controls — MAP with its name and `×`, mode, source, FROM/TO — and that this is the whole interface |
+| 4 | **The stepper mid-lockout** | Raise both hands, photograph while the lock lamp is lit and the scene readout shows e.g. `2 / 8` | that the lock is Live's own report of the scene starting, not a timer |
+| 5 | **A verification run** | `python3 synth/docs/verification/verify_cells.py` in a terminal, the tail showing `54/54 PASS` | what the replay method actually produces — and it pairs with the "lenient stub" paragraph |
+
+Worth a sixth if there is room: **the negative test**. Delete the lockout gate, rebuild, and show
+`five more raises while locked do nothing   FAIL   [0, 1, 2, 3, 0, 1]`. A test that has been
+proven able to fail is worth more than a page of green ticks, and this one shows the exact failure
+the design exists to prevent.
+
+### The numbers, for when the text needs them
+
+~26–32 Hz capture · 1144-byte OSC bundle · 25 joints · 24 synth parameters · 6 mapping slots ·
+9 zone cells (8 parameters + 1 stepper) · 88 Live device parameters · **7/7 + 9/9 + 54/54
+behaviour tests** · 139 stock devices decoded, 25 of them encrypted · 4 builders, all idempotent
 
 ## ▶ THE ZONE MAPPING LAYER — built 2026-09-22
 
@@ -136,14 +251,16 @@ be exercised without the Max editor open beside Live.
 - **a BODY lamp** — `valid` from `mb_body`. Every zone flag is multiplied by it. **Dark means
   nothing can move, however far a slider is dragged.**
 
-### Order of work — what is left
+### What is left
 
-1. **Run the whole zone layer in Live.** Nothing in it has been watched running yet — not one
-   cell, not the stepper. Build a Session View with a few filled scenes and trailing empties,
-   set Global Quantization to 1 Bar, and check the stepper advances one section per raise.
-2. **Measure the zone thresholds against a real dancer.** Still derived, still unverified, still
-   the most likely thing to be wrong.
-4. **Verify a mapping survives save/reopen of the Set.** Still not confirmed end to end.
+The step-by-step is in **"THE LIVE TEST"** at the top of this file; do not duplicate it here.
+The two things that test cannot settle:
+
+- **The zone thresholds are still derived, never measured.** 1.15 body lengths to the side, head
+  height plus 0.15 above. Reasoned from anatomy and never checked against a real dancer. If the
+  natural dance posture is wider, the zones latch while standing still. **Still the most likely
+  thing in the project to be wrong**, and it is one line at the top of `[p mb_zones]`.
+- **Whether a mapping survives save/reopen of the Set.** Never confirmed end to end.
 
 ### Known limitation, stated plainly
 
