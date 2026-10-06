@@ -29,6 +29,23 @@ class Program
     static KinectSensor sensor;
     static BodyFrameReader bodyReader;
     static Body[] bodies;
+
+    // The body we are following, held across frames.  0 = following nobody.
+    //
+    // Kinect v2 tracks up to six bodies and fills its array by an internal index that is
+    // neither stable nor meaningfully ordered.  So "the first tracked body" can change
+    // from one frame to the next the moment anything else tracks - a reflection, someone
+    // walking behind the performer, a chair that tracks for a few frames.  Every joint
+    // coordinate then jumps to a different body WHILE /mb/tracked STAYS 1, so the Mac has
+    // no way to know the body changed identity and faithfully maps the discontinuity:
+    // an audible click, and in a side zone a parameter thrown across its whole range.
+    //
+    // Losing the body is already guarded - that path sends /mb/tracked 0 and the Max side
+    // holds faders and releases switches.  SWAPPING the body was not guarded at all, and
+    // that asymmetry was the bug.  So: lock onto a TrackingId and hold it for as long as
+    // it is still tracked; only when it is genuinely gone choose again, preferring the
+    // body nearest the sensor's centre line, which is where the performer stands.
+    static ulong followedTrackingId;
     static OscSender osc;
 
     static JointType[] allJointTypes;
@@ -460,15 +477,66 @@ class Program
 
                 frame.GetAndRefreshBodyData(bodies);
 
-                // Plain loop instead of LINQ FirstOrDefault - this runs 30x/second.
+                // Plain loops instead of LINQ - this runs 30x/second on a weak machine.
+                //
+                // Stay with the body we already locked onto, for as long as it is tracked.
                 Body trackedBody = null;
-                for (int i = 0; i < bodies.Length; i++)
+                if (followedTrackingId != 0)
                 {
-                    if (bodies[i] != null && bodies[i].IsTracked)
+                    for (int i = 0; i < bodies.Length; i++)
                     {
-                        trackedBody = bodies[i];
-                        break;
+                        if (bodies[i] != null && bodies[i].IsTracked &&
+                            bodies[i].TrackingId == followedTrackingId)
+                        {
+                            trackedBody = bodies[i];
+                            break;
+                        }
                     }
+                }
+
+                // Following nobody, or the one we followed is gone: choose again, and
+                // take the body nearest the centre line rather than the lowest array
+                // index, which carries no meaning at all.
+                if (trackedBody == null)
+                {
+                    float bestOffCentre = float.MaxValue;
+                    for (int i = 0; i < bodies.Length; i++)
+                    {
+                        if (bodies[i] == null || !bodies[i].IsTracked)
+                            continue;
+
+                        // A body whose spine base is not tracked yet still counts, but
+                        // comes last: its Position is 0,0,0, which would otherwise read
+                        // as perfectly centred and win every time.
+                        Joint spineBase = bodies[i].Joints[JointType.SpineBase];
+                        float offCentre = spineBase.TrackingState == TrackingState.NotTracked
+                            ? float.MaxValue / 2f
+                            : Math.Abs(spineBase.Position.X);
+
+                        if (offCentre < bestOffCentre)
+                        {
+                            bestOffCentre = offCentre;
+                            trackedBody = bodies[i];
+                        }
+                    }
+
+                    if (trackedBody != null)
+                    {
+                        followedTrackingId = trackedBody.TrackingId;
+                        Log("Following body " + followedTrackingId + ", " +
+                            bestOffCentre.ToString("F2") + " m off centre.");
+                    }
+                }
+
+                // Nobody at all in view, so stop following.  This belongs with the rest
+                // of the follow decision rather than down in the no-body send path: who we
+                // are following is a question about tracking, and tying it to the sender
+                // meant it silently stopped being answered during shutdown.  Logged once,
+                // not 30x a second, because zeroing it is what makes the next frame choose.
+                if (trackedBody == null && followedTrackingId != 0)
+                {
+                    Log("Lost body " + followedTrackingId + " - following nobody.");
+                    followedTrackingId = 0;
                 }
 
                 OscSender sender_ = osc;
