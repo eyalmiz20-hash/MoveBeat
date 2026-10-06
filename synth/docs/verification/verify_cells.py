@@ -124,10 +124,27 @@ class Cell:
                             s.st[i][k] = float(a)
                         except ValueError:
                             s.st[i][k] = a
-            if re.match(r'^line(\s|$)', t):
+            if re.match(r'^line~?(\s|$)', t):
                 a = t.split()[1:]
+                # [line~] is a SIGNAL and so has no grain of its own.  It is modelled at
+                # 1 ms because that is live.remote~'s own default @smoothing - its refpage:
+                # "a smoothing value of 1 ms will sample the incoming signal every 1 ms
+                # and send ramp events".  So the pair [line~] -> [live.remote~] really
+                # does deliver a 1 ms-grained ramp, and the model now says so.
+                #
+                # Until 2026-10-06 [line~] was a PASS-THROUGH here: it took v[0] and
+                # dropped the ramp TIME on the floor.  The suite therefore could not see
+                # the output ramp at all - no test could measure the shape of what
+                # reaches Live, and changing [pack 0. 20]'s ramp length left 99/99
+                # completely untouched.  That is the FIFTH instance of this project's
+                # recurring fault and the first one in the model of MAX rather than of
+                # Live, so the rule the fourth instance wrote down - model the
+                # boundary's TIMING, not only its vocabulary - applies to Max's own
+                # objects too, not just to the Live API.
+                grain = 1.0 if t.startswith('line~') else (
+                    float(a[1]) if len(a) > 1 else 20.0)
                 s.lines[i] = {'v': float(a[0]) if a else 0.0,
-                              'grain': float(a[1]) if len(a) > 1 else 20.0,
+                              'grain': grain,
                               'start': 0.0, 'target': 0.0, 'dur': 0.0,
                               't0': 0.0, 'next': 0.0, 'running': False}
             if t.startswith('uzi') and len(t.split()) > 1:
@@ -306,7 +323,7 @@ class Cell:
         if t.startswith('unpack'):
             for k in range(b['numoutlets'] - 1, -1, -1):
                 s.emit(oid, k, v[k])
-        elif re.match(r'^line(\s|$)', t):
+        elif re.match(r'^line~?(\s|$)', t):
             # [line] is the control-rate [line~]: "target time" ramps there and keeps
             # outputting every `grain` ms until it arrives; a bare number jumps.  The
             # envelope rides this, which is why it keeps running when frames stop.
@@ -461,8 +478,6 @@ class Cell:
         elif t.startswith('clip '):
             lo, hi = [float(x) for x in t.split()[1:3]]
             s.emit(oid, 0, max(lo, min(hi, v)))
-        elif t.startswith('line~'):
-            s.emit(oid, 0, v[0] if isinstance(v, list) else v)
 
 
 # --------------------------------------------------------------------- helpers
@@ -521,6 +536,60 @@ print('=' * 74)
 print('  verify_cells.py - replaying the real [p mb_cell] graph')
 print('  LEFT span %+.2f .. %+.2f body lengths   ATTACK %g ms' % (ZLO, ZHI, Z.ATTACK_MS))
 print('=' * 74)
+
+# TEST 0 -------------------------------------------------------------------
+print('\nTEST 0  the patch\'s output ramp matches zone_constants.py')
+# The guard verify_zones.py TEST 0 puts on the thresholds, applied to the one number that
+# decides whether the output has flat spots in it.  Without this the suite would pass at
+# ANY ramp length, because it replays whatever the patch happens to say - so editing
+# OUTPUT_RAMP_MS and forgetting to re-run build_cells.py would leave the device on the old
+# value while the suite still printed a full house.  That is the failure mode this project
+# has now recorded five times, so it gets a test instead of a note.
+#
+# It walks to [line~] and reads back whatever feeds it, rather than grepping for the text:
+# that way it also fails if the ramp is ever disconnected or fed from something else.
+bad = []
+for _n, _cp in enumerate(ALL_CELLS):
+    _boxes = {b['box']['id']: b['box'] for b in _cp['boxes']}
+    _lns = [l['patchline'] for l in _cp.get('lines', [])]
+    for _oid, _bb in _boxes.items():
+        if not str(_bb.get('text', '')).startswith('line~'):
+            continue
+        _srcs = [l['source'][0] for l in _lns if l['destination'][0] == _oid]
+        _packs = [str(_boxes[s].get('text', '')) for s in _srcs
+                  if str(_boxes[s].get('text', '')).startswith('pack ')]
+        if len(_packs) != 1:
+            bad.append('cell %d: line~ fed by %r' % (_n, _packs))
+        elif abs(float(_packs[0].split()[2]) - Z.OUTPUT_RAMP_MS) > 1e-9:
+            bad.append('cell %d: ramp %s ms, expected %g' %
+                       (_n, _packs[0].split()[2], Z.OUTPUT_RAMP_MS))
+check('all %d cells ramp over OUTPUT_RAMP_MS = %g ms' % (len(ALL_CELLS), Z.OUTPUT_RAMP_MS),
+      not bad, '; '.join(bad[:3]) or '')
+
+# And the behaviour that number exists for.  The camera's SLOWEST gap is the hard case:
+# if the ramp finishes before the next frame arrives, the output sits flat for the
+# remainder and the parameter moves in steps whose tread length wobbles with the camera.
+# So drive frames at the worst-case 38 ms (26 Hz) with the hand moving steadily, and
+# require the ramp to still be live for essentially the whole gap.  [line~] is modelled
+# at a 1 ms grain, so the number of values that reach live.remote~ inside one gap IS the
+# number of milliseconds the ramp was still moving.
+#
+# This is the check that fails on the old 20 ms: it reported ~20 of 38 ms covered, i.e.
+# the knob stood still for nearly half of every frame interval.
+WORST_GAP_MS = 38.0                  # 26 Hz, the slow end of the measured 26-32 Hz
+_c = new(FADER, frm=0.0, to=100.0, attack=0.0)   # no envelope: pure tracking
+_c.inlet(IN_ACT, 1)
+_cov = []
+for _k in range(6):
+    _x = ZLO + (ZHI - ZLO) * (_k / 6.0)          # a steady sweep across the span
+    _n0 = len(_c.remote)
+    _c.inlet(IN_SRC, [_x, 0.0, 0.0, 0.0, 1.0])
+    _c.advance(WORST_GAP_MS)
+    _cov.append(len(_c.remote) - _n0)
+_worst = min(_cov[1:])               # skip the first, which starts from a standstill
+check('and it is still ramping for the whole %g ms worst-case gap' % WORST_GAP_MS,
+      _worst >= 0.9 * WORST_GAP_MS,
+      'moving %g of %g ms (per-frame: %s)' % (_worst, WORST_GAP_MS, _cov))
 
 # TEST 1 -------------------------------------------------------------------
 print('\nTEST 1  entering the zone puts the knob at FROM, full extension at TO')
@@ -840,16 +909,46 @@ check('and it only moves one way', all(b <= a + 1e-9 for a, b in zip(traj, traj[
 check('halfway through the attack it is still on its way',
       0.15 < traj[int(Z.ATTACK_MS / 2 / FRAME_MS)] < 0.95,
       'at %g ms: %.2f' % (Z.ATTACK_MS / 2, traj[int(Z.ATTACK_MS / 2 / FRAME_MS)]))
-check('and it arrives', abs(traj[-1]) < 1e-6, str(round(traj[-1], 4)))
+# Overlapping ramps CONVERGE rather than land.  Each frame re-aims [line~] over
+# OUTPUT_RAMP_MS, but only FRAME_MS passes before the next target arrives, so the output
+# closes FRAME_MS/OUTPUT_RAMP_MS of the remaining gap each time and approaches the target
+# geometrically instead of hitting it.  That is not a defect, it is the entire point of a
+# ramp longer than the frame gap - it is what leaves no flat spot between frames - so
+# "arrives" has to mean "inside a tolerance far below what Live can represent".  1e-3 of a
+# normalised parameter is 0.1%, well under Live's own resolution and inaudible.
+check('and it converges', abs(traj[-1]) < 1e-3, str(round(traj[-1], 6)))
+# And the moment frames stop, the last ramp finishes and it does land exactly.
+settle(c)
+check('and it lands exactly once the frames stop', abs(c.remote[-1]) < 1e-9,
+      str(round(c.remote[-1], 9)))
 
 # TEST 17 ------------------------------------------------------------------
-print('\nTEST 17  ATTACK 0 is the old instant entry, exactly')
+print('\nTEST 17  ATTACK 0 removes the envelope - but not the output ramp')
 # A feel control that cannot be switched off is a trap: there has to be a way back to
 # the behaviour that was verified before it existed.
+#
+# CORRECTED 2026-10-06.  This test used to assert that ATTACK 0 "reaches the target in
+# one frame, the old instant entry, exactly" - and it passed only because the harness
+# modelled [line~] as a PASS-THROUGH.  It was never true of the device.  A cell's value
+# has always reached Live through [pack 0. OUTPUT_RAMP_MS] -> [line~], so there has
+# always been an output ramp underneath the envelope - 20 ms then, 40 ms now.  ATTACK 0
+# switches off the ENVELOPE; what remains is the ramp that keeps live.remote~ fed with a
+# continuous signal, and that one is not optional - taking it away is what made entry
+# audible in the first place.  CLAUDE.md's "ATTACK 0 restores the previous instant
+# behaviour exactly" was a claim about the model, not about the device.
 c = new(FADER, frm=0.0, to=100.0, attack=0.0)
 frame(c, x=ZHI, active=1)
-check('one frame reaches the target with no glide', abs(c.remote[-1] - 1.0) < 1e-9,
-      str(round(c.remote[-1], 6)))
+check('with no envelope it is most of the way after a single frame',
+      c.remote[-1] > 0.8, str(round(c.remote[-1], 3)))
+c.advance(Z.OUTPUT_RAMP_MS)
+check('and it is there as soon as the output ramp completes',
+      abs(c.remote[-1] - 1.0) < 1e-9, str(round(c.remote[-1], 9)))
+# The contrast is the point: the same entry WITH the attack is nowhere near yet.
+c2 = new(FADER, frm=0.0, to=100.0)
+frame(c2, x=ZHI, active=1)
+c2.advance(Z.OUTPUT_RAMP_MS)
+check('while the same entry with the %g ms attack is not' % Z.ATTACK_MS,
+      c2.remote[-1] < 0.5, str(round(c2.remote[-1], 3)))
 
 # TEST 18 ------------------------------------------------------------------
 print('\nTEST 18  the envelope is a crossfade, so it cannot overshoot either end')
@@ -912,9 +1011,13 @@ for _ in range(11):
     rel.append(c.remote[-1])
 check('leaving does not step it either', abs(first - 0.80) < 0.02,
       'moved %.3f on release' % abs(first - 0.80))
-check('it glides down to FROM', abs(rel[-1] - 0.20) < 1e-6
+# Converges rather than lands, for the same reason as TEST 16 - see the note there.
+check('it glides down towards FROM, monotonically', abs(rel[-1] - 0.20) < 1e-3
       and all(b <= a + 1e-9 for a, b in zip(rel, rel[1:])),
       '%s ...' % [round(v, 2) for v in rel[:5]])
+settle(c)
+check('and it settles exactly on FROM', abs(c.remote[-1] - 0.20) < 1e-9,
+      str(round(c.remote[-1], 9)))
 
 # ====================================================================== stepper
 STEPPER = find(doc['patcher'], 'p mb_stepper')

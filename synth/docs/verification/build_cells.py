@@ -431,7 +431,7 @@ def build_cell(appversion, cellid, span):
     tout = obj('t f f', 30, 960, 80, 1, 2, ['float', 'float'])
     L(blend, 0, tout, 0)
     L(tout, 1, heldf, 1)                   # 1st: this is what the knob now has
-    pk = obj('pack 0. 20', 30, 1000, 110, 2, 1, [''])
+    pk = obj('pack 0. %g' % Z.OUTPUT_RAMP_MS, 30, 1000, 110, 2, 1, [''])
     L(tout, 0, pk, 0)                      # 2nd: and out it goes
     ln = obj('line~', 30, 1040, 80, 2, 1, ['signal'])
     L(pk, 0, ln, 0)

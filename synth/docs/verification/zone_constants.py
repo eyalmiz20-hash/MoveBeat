@@ -101,6 +101,31 @@ GRACE = 1000                # fire re-arms this long after tracking returns
 ATTACK_MS = 250.0           # default
 ATTACK_MAX = 2000.0
 
+# ------------------------------------------------- the output ramp into live.remote~
+#
+# A cell's value reaches Live as [pack 0. OUTPUT_RAMP_MS] -> [line~] -> [live.remote~],
+# so every frame hands line~ a new target AND a time to get there in.  That time has to
+# be at least as long as the gap between two frames, and this is the whole reason:
+#
+# The camera runs 26-32 Hz - a gap of 31-38 ms that varies from frame to frame.  At the
+# old 20 ms the ramp ARRIVED and then sat flat for the remaining 11-18 ms, so the output
+# was a staircase whose tread length wobbled by about a third along with the camera: the
+# parameter moved unevenly while the arm moved smoothly, which is exactly what a
+# performer hears as jitter.  A ramp longer than the longest gap never arrives early, so
+# consecutive ramps overlap and the output has no flat spots in it at all.
+#
+# 40 ms clears the 38 ms worst case.  The cost is 40 ms of smoothing lag behind the hand,
+# which against the 250 ms ATTACK and the speed of a dance gesture is not felt.  Raising
+# it smooths more and lags more; below about 38 the flat spots come back.
+#
+# Stated limit: this is reasoned from the 26-32 Hz capture figure, NOT measured at the
+# output - and until 2026-10-06 it could not have been, because verify_cells.py modelled
+# [line~] as a pass-through and so could not see the ramp at all.  The better version
+# measures the real inter-frame interval and sets the ramp from it, so it follows a
+# camera that is running slow.  Not built: one constant was the change that could be
+# proven before the deadline.
+OUTPUT_RAMP_MS = 40.0
+
 # --------------------------------------------------------------- movement spans
 #
 # Each cell's span per source axis, as (lo, hi) in body lengths: lo is where the zone
