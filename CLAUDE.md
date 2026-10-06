@@ -4,38 +4,13 @@ Final thesis project: movement to sound. A Kinect v2 tracks a body; the coordina
 
 ---
 
-# 🔴 THE PROJECT BOOK IS OUT OF DATE — SAY SO AT THE START OF EVERY SESSION
+## The project book — section 3.3.6 was rewritten 2026-10-06
 
-**Raised 2026-09-22. Still open. Delete this banner only when the user says the book is fixed.**
-
-The build reversed three things section 3.3.6 states as settled. **The code is right and the book
-is wrong** — each reversal was forced by measurement, and the evidence is in
-"THE ZONE MAPPING LAYER" immediately below. Until the chapter is rewritten, the book describes a
-device that no longer exists.
-
-| § 3.3.6 says | The device does | Why |
-|---|---|---|
-| **SET RANGE** — a button per cell that learns the movement span | there is no such button | the zone already fixes the span; it is baked into each cell |
-| the cell holds an **input** range; the **output** range is "Live's own mapping Min/Max" | the cell holds the **output** range, `FROM %` / `TO %` | `live.remote~` exposes **no Min/Max anywhere in Live**. Ableton hit the same wall — `Abl.MapWithScaledOuput.maxpat` |
-| **FADER pickup** is **mandatory** | there is no pickup | removed at the user's decision after it locked cells dead twice in Live; belongs in Chapter 4 as future work |
-
-Two more paragraphs the chapter should gain, both with concrete episodes behind them:
-
-- **"Read the reference implementation" has a failure mode.** CLAUDE.md sent this build to Max for
-  Live Essentials' LFO. In Live 12 that device is **encrypted** — 25 of 139 stock devices are. The
-  method survived only because two *other* shipped devices turned out to be readable and carried
-  the same abstraction. Worth recording: the advice was right, the specific artefact was not.
-- **A lenient test stub certifies a broken patch.** `verify_cells.py` reported 29/29 while the
-  device could not map anything at all, because the stub accepted a bare number where Live needs
-  `id <n>`. This is the sharpest limit of the replay method in the whole project and deserves to
-  sit next to the existing "state the limit too, and mean it" paragraph.
-
-Also worth a line in Chapter 5.2: the nine cells **cannot** fit the ~169 px Live device strip, so
-they live in a floating window opened with `[pcontrol]` — which is why there are now two
-screenshots to take, not one.
-
-**Everything the book still needs — which section, which screenshot, what to write — is set out
-in "FINISHING THE BOOK" immediately below. Work from that.**
+**The three reversals are now IN the book and the SET RANGE control is gone from the text.**
+The device and the chapter agree again, so there is no standing warning to give at the start of
+a session any more. What the chapter gained, and why, is kept in "FINISHING THE BOOK" below —
+the reasoning is worth keeping even though the writing is done. **Still outstanding there: the
+five screenshots and the three Chapter 4 entries.**
 
 ---
 
@@ -59,25 +34,64 @@ and a stubbed Live Set. **Expect to find things; that is what this session is fo
 | Re-drag `MoveBeatController.amxd` | Live uses its own imported copy. The single most likely reason a change appears to do nothing |
 | `Input` → **MOCK - sliders only** | A freshly dragged device resets this to **LIVE**, and in LIVE with no camera `valid` is 0 and **nothing can move** |
 | **The BODY lamp must be lit** | Bottom row of the device panel. Dark = no body = nothing will happen, however far you drag |
-| Global Quantization → **1 Bar** | The stepper's lockout is about a bar of immunity at this setting |
+| Global Quantization → **1 Bar** | The stepper's lockout is about a bar of immunity at this setting. The Set already reads 1 Bar |
+| **Clips in the SESSION grid** | Scenes are Session View rows. The saved Set has 8 scenes and **no clips** — its song is in the Arrangement, so the stepper has nothing it may fire. It now says `no clips` when that is the case |
+| **Only one `MoveBeatSynth` in the Set** | The saved Set has two (`1-MoveBeatSynth`, `5-MoveBeatSynth`). `udpreceive 7500` cannot bind twice and the second fails silently |
 
 ### The order to test in
 
 1. **A cell, end to end.** Open `ZONE MAPPING`. Press `MAP` on LEFT SIDE × L hand, click a knob
    on an audio effect. The name appears in the cell *and* in the device panel's bottom row, and
-   the button releases itself. Drag `left hand X` to the far left: the row's lamp lights and the
-   value readout runs 0.00 → 1.00 with the knob following.
-2. **FROM / TO.** Set 20 and 60. The knob must never leave that band.
-3. **Leave and return.** Drag out of the zone — the knob holds. Drag back — it follows again
-   immediately. (There is no pickup any more; it was removed today.)
-4. **SWITCH.** Same two ends: TO in the zone, FROM on leaving.
-5. **`×` clears a mapping**, and the knob returns to Live's control.
-6. **Save the Set, close Live, reopen.** Every mapping must come back. **Never confirmed.**
-7. **The stepper.** Session View with, say, four filled scenes and Live's trailing empties.
-   Raise both hands above your head: scene 1 fires and the lock lamp lights. Raise again
-   immediately: **nothing happens.** Once the scene is playing, the next raise advances. After
-   the last filled scene it wraps to the first.
-8. **The acceptance test from ZONES.md.** Walk out of frame, wait, walk back in through a side
+   the button releases itself. Drag `left hand X` left: the lamp lights at **−0.75 body lengths**
+   and the readout runs 0.00 → 1.00 by **−1.35**, with the knob following.
+2. **The two things 2026-10-06 changed — check these first, they are what was asked for.**
+   - **The zone starts closer in and the whole knob is usable.** The readout must reach a clean
+     1.00 at a comfortable arm position, not only at full stretch. If it still tops out partway,
+     the span is still too optimistic: lower `SPANS['LEFT'][0][1]` in `zone_constants.py` and
+     re-run the three commands. That is the one number to turn.
+   - **`ATTACK` (bottom of the mapping window, 250 ms).** Set it to 0 and the knob snaps on entry —
+     the old behaviour. Put it back and it glides in. Try 600 ms for an obvious one, then settle.
+3. **FROM / TO.** Set 20 and 60. The knob must never leave that band.
+4. **Leave and return.** Drag out of the zone — the knob holds, and keeps holding. Drag back — it
+   glides to the new position over `ATTACK` rather than jumping. (There is no pickup; it was
+   removed 2026-09-22 and the attack envelope replaced what it was for.)
+5. **SWITCH.** Same two ends: TO in the zone, FROM on leaving — both glided now, which is the
+   point of mapping it to a Dry/Wet rather than a bypass.
+6. **A side zone must not latch while you stand still.** The new risk, and the opposite of the old
+   one: 0.75 is much closer in than 1.15. Stand normally, move naturally without meaning to enter a
+   zone, and watch the two side lamps. If they flicker, raise `SIDE_ENTER`.
+7. **`×` clears a mapping**, and the knob returns to Live's control.
+8. **Save the Set, close Live, reopen.** Every mapping must come back — and `ATTACK` with them, as
+   a new Live parameter. **Never confirmed.**
+9. **The stepper** — this is the one that was broken *twice*, so check it in this order.
+   - **It was rebuilt again on 2026-10-06 (second round): the raise now crosses `[deferlow]` onto
+     Live's main thread.** Before that it fired **nothing at all** from a real body or from the
+     mock auto-motion, because Live defers every API reply and the scene count came back after the
+     walk. **So re-drag the device — a Set loaded before that rebuild still runs the dead one.**
+   - **FIRST: are there clips in the SESSION grid?** Scenes are Session View rows. The
+     presentation Set as saved on 2026-09-21 had **8 scenes and zero clips** — the song was in the
+     Arrangement — so the stepper had nothing it was allowed to fire. If the readout says
+     **`no clips`**, that is the device telling you this, and no amount of raising will help until
+     there are clips in the grid.
+   - **The scene readout shows `scene / count` with Live's own row numbers**, e.g. `2 / 8`. The
+     count is every scene row in the Set, filled or not — **8 with 3 filled is correct**, because
+     Live keeps the empty rows and the stepper skips them. Only `0` means `getcount` is broken.
+     **If the count is `0`, `getcount` is not answering and nothing else about the stepper will
+     work** — that was the 2026-10-06 bug and the readout is the five-second check for it.
+   - Session View with, say, four filled scenes and Live's trailing empties. Raise both hands:
+     scene 1 fires and the lock lamp lights. Raise again immediately: **nothing happens.** Once
+     the scene is playing, the next raise advances. After the last filled scene it wraps to the
+     first.
+   - **Watch how the lock lamp clears.** It should go out when the scene actually starts — within
+     a bar at Global Quantization 1 Bar. If it stays lit for a full **8 seconds** every time, the
+     `is_triggered` observer is not reporting and the failsafe timer is doing the unlocking
+     instead; the guard is then a timer, which is exactly what it was designed not to be.
+   - **Open the Max console once** while testing this. The stepper now prints a full sentence when
+     a raise finds no scene with a clip, which is the one failure that otherwise looks identical to
+     a dead device.
+   - Try it with **one** filled scene too. Every raise must re-fire that scene. (That case is
+     `verify_cells.py` TEST 29 — it is where live.path's outlet 1 used to die silently.)
+10. **The acceptance test from ZONES.md.** Walk out of frame, wait, walk back in through a side
    zone: loops still playing, no effect latched, no parameter jumped, **the song not advanced.**
 
 ### If something does not work
@@ -90,14 +104,15 @@ zone), then open the Max console. The five-second checks first.
 
 The device is finished; the chapter describing it is not. Work through this list.
 
-### Text to change — section 3.3.6
+### ~~Text to change~~ — section 3.3.6 — **DONE 2026-10-06**
 
-Three statements in the current text are now wrong. Each has a concrete reason, and the reason is
-the interesting part — **write the reason, not just the correction.**
+Three statements in the old text were wrong. All three are now corrected in the book and the
+SET RANGE control is gone from it. **The table is kept because the reasons are the content** —
+each correction is only interesting if the chapter says what forced it.
 
 | Replace | With, in a sentence or two |
 |---|---|
-| the **SET RANGE** button and the per-cell input range | The zone already fixes how much movement is available — a side zone begins at 1.15 body lengths and an arm reaches about 1.79 — so the span is baked into each cell and there is nothing to calibrate. One fewer control on screen. |
+| the **SET RANGE** button and the per-cell input range | The zone already fixes how much movement is available, so the span is baked into each cell and there is nothing to calibrate. One fewer control on screen. **And then say what that cost**: the baked span has to be right, nothing on screen says when it is not, and the first numbers (a side zone from 1.15 to 1.79 body lengths) were wrong enough that the knob used the lower 0.3 of its range. Revised 2026-10-06 to 0.75 … 1.35. The honest version of this paragraph is the more interesting one. |
 | "Live's mapping already provides the output range — use Live's" | True of a MIDI mapping, false of `live.remote~`: it seizes the parameter and drives it from a bare 0..1 signal, and there is **no Min/Max anywhere in Live** for it. The cell therefore carries `FROM %` / `TO %`. Ableton hit the same wall — their own abstraction is called `Abl.MapWithScaledOuput.maxpat` and runs `[clip~ 0. 1.]` → `[scale~ 0. 1. 0. 1.]` → `[live.remote~]`. |
 | **FADER pickup is mandatory** | Removed. It latched cells permanently: leaving a side zone drags the fader to exactly 0.00, and "release when the movement crosses the held value" is then true for no value at all, so the cell died after one use. Moved to Chapter 4. |
 
@@ -135,10 +150,10 @@ Take them **after** the Live test, with a real Set loaded so nothing on screen i
 | # | What | How | Caption should say |
 |---|---|---|---|
 | 1 | **The device panel**, 454 × 168 | The controller in the Live device strip, with a mapping made and the BODY lamp lit | that the whole device is this small, and that the bottom row reports what is mapped and whether a body is present |
-| 2 | **The mapping window**, 526 × 281 | Press `ZONE MAPPING`. Have three or four cells mapped to real effects so the names are readable | that it is the book's own table made literal: three zones down, left hand / right hand / both hands across |
+| 2 | **The mapping window**, 526 × 309 | Press `ZONE MAPPING`. Have three or four cells mapped to real effects so the names are readable | that it is the book's own table made literal: three zones down, left hand / right hand / both hands across |
 | 3 | **One cell, close up** | Crop from #2 | the four controls — MAP with its name and `×`, mode, source, FROM/TO — and that this is the whole interface |
 | 4 | **The stepper mid-lockout** | Raise both hands, photograph while the lock lamp is lit and the scene readout shows e.g. `2 / 8` | that the lock is Live's own report of the scene starting, not a timer |
-| 5 | **A verification run** | `python3 synth/docs/verification/verify_cells.py` in a terminal, the tail showing `54/54 PASS` | what the replay method actually produces — and it pairs with the "lenient stub" paragraph |
+| 5 | **A verification run** | `python3 synth/docs/verification/verify_cells.py` in a terminal, the tail showing `99/99 PASS` | what the replay method actually produces — and it pairs with the "lenient stub" paragraph |
 
 Worth a sixth if there is room: **the negative test**. Delete the lockout gate, rebuild, and show
 `five more raises while locked do nothing   FAIL   [0, 1, 2, 3, 0, 1]`. A test that has been
@@ -148,7 +163,7 @@ the design exists to prevent.
 ### The numbers, for when the text needs them
 
 ~26–32 Hz capture · 1144-byte OSC bundle · 25 joints · 24 synth parameters · 6 mapping slots ·
-9 zone cells (8 parameters + 1 stepper) · 88 Live device parameters · **7/7 + 9/9 + 54/54
+9 zone cells (8 parameters + 1 stepper) · 89 Live device parameters · **7/7 + 11/11 + 99/99
 behaviour tests** · 139 stock devices decoded, 25 of them encrypted · 4 builders, all idempotent
 
 ## ▶ THE ZONE MAPPING LAYER — built 2026-09-22
@@ -157,17 +172,43 @@ behaviour tests** · 139 stock devices decoded, 25 of them encrypted · 4 builde
 
 **The zone layer is complete.** The eight parameter cells, the MAP button, the mapping window and
 the scene stepper are all built and verified: `verify_cells.py` replays the real `[p mb_cell]` and
-`[p mb_stepper]` graphs, **54/54**. `verify_body.py` (7/7) and `verify_zones.py` (9/9) still pass —
-`mb_body` and `mb_zones` were not touched.
+`[p mb_stepper]` graphs, **99/99**; `verify_zones.py` **11/11**; `verify_body.py` **7/7**.
 
-**Nothing in it has been watched running in Live yet.** That is the next session's whole job.
+**It has now been run in Live once, and that produced the 2026-10-06 revision below.**
 
-Generated by `synth/docs/verification/build_cells.py`. Regenerate, never hand-edit:
+### ⚠ THE REBUILD IS THREE COMMANDS NOW, NOT TWO
+
+`tune_zones.py` is new and comes **first**. Regenerate, never hand-edit:
 
 ```
+python3 synth/docs/verification/tune_zones.py
 python3 synth/docs/verification/build_cells.py abvL abvR lftL lftR lftB rgtL rgtR rgtB
 python3 synth/docs/verification/build_devices.py
 ```
+
+All three are idempotent — run them twice and the bytes are identical. If you forget the first one,
+`verify_zones.py` **TEST 0 fails** and names the command, because it compares the patch's own
+thresholds against `zone_constants.py` rather than against a copy of its own.
+
+### ▶ 2026-10-06 — the zone geometry and timing moved into one file
+
+`synth/docs/verification/zone_constants.py` is now **the** source for every zone threshold, delay
+and span, with the reasoning for each number beside it. Until then the same figures sat in five
+files — the two builders and both verification suites — and the suites asserted against their own
+copies, so missing a file would have produced green ticks against the wrong device.
+
+| | was | now | why |
+|---|---|---|---|
+| side zone enter | 1.15 | **0.75** | reported from Live: entry needed the arm almost horizontal |
+| side zone leave | 1.00 | **0.60** | same 0.15 hysteresis band, moved with it |
+| side commit delay | 200 ms | **60 ms** | ABOVE keeps 200 ms (it fires scenes); a side cell only moves a knob |
+| side X span | 1.15 … 1.79 | **0.75 … 1.35** | 1.79 is a locked-out arm. Chasing it is why the knob used the lower **0.3** of its range |
+| side Y / Z / SPREAD spans | ABOVE's figures | **revised** | all three lay *outside* the side zone — see the span table below |
+| entering a zone | a one-frame step | **a 250 ms glide** | the new ATTACK envelope |
+
+**The report behind this is a performer's, not a model's**, and that matters: the arithmetic in
+`zone_constants.py` predicts the old spans wasted about a third of the knob's travel; dancing in
+front of the sensor measured two thirds. When the two disagree, the dancer is right.
 
 ### ⚠ Three things the book says that the build had to reverse
 
@@ -176,7 +217,7 @@ needs updating for all three.**
 
 | The book says | What was built, and why |
 |---|---|
-| **SET RANGE** — a button per cell that learns the movement span | **Removed.** The span is fixed by the zone itself (a side zone begins at 1.15 body lengths; an arm reaches ~1.79) and is baked into each cell. There is nothing left to calibrate, and one fewer control. |
+| **SET RANGE** — a button per cell that learns the movement span | **Removed.** The span is fixed by the zone itself and is baked into each cell. There is nothing left to calibrate, and one fewer control — but the span then has to be *right*, and the first set was not: see the 2026-10-06 revision below. |
 | **Input range** in the cell; **output range** is "Live's own mapping Min/Max" | **Reversed — the cell now carries the OUTPUT range (FROM % / TO %).** ZONES.md's claim is true of a MIDI mapping and false of `live.remote~`, which seizes the parameter and drives it from a bare 0..1 signal with **no Min/Max anywhere in Live**. Ableton hit the same wall: their own abstraction runs `[clip~ 0. 1.]` → `[scale~ 0. 1. 0. 1.]` → `[live.remote~]` with the scale's range inlets fed from two `[/ 100.]`, and the file is called **`Abl.MapWithScaledOuput.maxpat`**. |
 | **FADER pickup** — "mandatory" | **Removed**, at the user's decision on 2026-09-22, after it locked cells dead twice in Live. Moved to Chapter 4 as future work. See the trap below — the failure is not obvious and is worth writing up. |
 
@@ -188,26 +229,294 @@ FADER|SWITCH   X|Y|Z|SPREAD     mode, and which axis drives it
 FROM %          TO %            where the knob sits on entering, and at full extension
 ```
 
-- hand enters the zone → the knob sits at **FROM**; arm fully extended → **TO**
+- hand enters the zone → the knob **glides to** FROM; arm fully extended → **TO**
 - FROM above TO simply inverts the direction
-- leaving the zone: a FADER **holds**, a SWITCH returns to **FROM**
+- leaving the zone: a FADER **holds**, a SWITCH glides back to **FROM**
 - a SWITCH is the same two ends, so it can be a Dry/Wet between 15% and 85% rather than a hard 0/1
 
-Per-cell movement spans, baked in by the builder (`SPANS` in `build_cells.py`):
+### The ATTACK envelope — the one control that is global, added 2026-10-06
+
+Entering a zone used to **step** the knob to FROM in a single frame, and the step was audible. Each
+cell now crossfades:
+
+```
+out = held + env * (target - held)
+
+    held     frozen at whatever the knob had the instant the zone flag changed
+    target   the live movement value, FROM..TO as before
+    env      0 -> 1 over ATTACK ms, smoothstep - flat at both ends, no corner either side
+```
+
+After the attack `env` is 1 and the output **is** the movement value. **It shapes the entry, never
+the tracking.** `ATTACK 0` restores the previous instant behaviour exactly, and a test asserts it.
+
+Three details worth keeping:
+
+- **`env` rides `[line]`, the control-rate `[line~]`, on its own 20 ms clock — not the frame rate.**
+  A frame-driven envelope stalls the moment frames stop, and in `MOCK - sliders only` frames stop
+  every time the mouse does: the attack would freeze half-finished exactly while you were testing it.
+- **It is a crossfade, so it cannot overshoot.** `out` is always between two values that are
+  themselves inside FROM..TO. No `clip` to add and none to forget.
+- **The same mechanism does three other jobs for free.** A SWITCH's release is the same curve in the
+  other direction, so a Dry/Wet no longer clicks. A FADER leaving has `held` and `target` set to the
+  *same* value, so the output is provably flat. And a cell that flashes for two frames during a
+  two-hand entry slips its knob about **15%** instead of jumping the whole way — which is what made
+  the 60 ms side commit affordable. `verify_cells.py` TEST 19 measures that against the same flash
+  with the envelope switched off.
+
+**ATTACK is one Live parameter on the mapping window, global to all eight cells, default 250 ms.**
+Global and not per cell because the window has no room for eight more; a control at all rather than
+a baked constant because an attack time is a feel parameter and baking it in would mean a rebuild,
+a re-drag into Live and a restart per attempt.
+
+> **One behaviour changed, and it is worth knowing.** A FADER outside its zone now keeps *sending*
+> its held value instead of sending nothing — `[line]` runs for ATTACK ms after every transition and
+> the frame still re-evaluates the blend. The value is provably unchanged (TEST 4 asserts exactly
+> that, where it used to assert "nothing is sent"), the traffic is control-rate into a `[line~]` and
+> never reaches Live's object model, and `live.remote~` was already writing every sample regardless.
+
+Per-cell movement spans, from `SPANS` in **`zone_constants.py`** (body lengths; `lo` is the zone
+edge, `hi` is as far as the gesture goes):
 
 | zone | X | Y | Z | SPREAD |
 |---|---|---|---|---|
 | ABOVE | −1.79 … 1.79 | **1.60 … 2.40** | −1.00 … 1.00 | 1.00 … 3.00 |
-| LEFT | **−1.15 … −1.79** | 1.60 … 2.40 | −1.00 … 1.00 | 1.00 … 3.00 |
-| RIGHT | **1.15 … 1.79** | 1.60 … 2.40 | −1.00 … 1.00 | 1.00 … 3.00 |
+| LEFT | **−0.75 … −1.35** | −0.20 … 1.30 | −0.50 … 0.50 | 0.20 … 1.60 |
+| RIGHT | **0.75 … 1.35** | −0.20 … 1.30 | −0.50 … 0.50 | 0.20 … 1.60 |
 
-**The span must overlap the zone that switches the cell on, or the cell is dead.** A range the
+**The span must lie inside the zone that switches the cell on, or the cell is dead.** A range the
 zone can never reach normalises to a constant, the knob is pinned, and nothing on screen says why.
-`verify_cells.py` TEST 12 checks this for every cell and was proven to fail on the bad values.
+
+**That is not hypothetical — three of the four side axes were wrong until 2026-10-06**, all three
+carrying ABOVE's figures, and the old TEST 12 passed every one because it only ever looked at the
+cell's *default* axis:
+
+- **Y was 1.60 … 2.40** — above the head, where the head rule puts the hand in ABOVE instead. A
+  side cell set to Y was dead.
+- **SPREAD was 1.00 … 3.00** — two arms opened wide, impossible with both hands on one side. `lftB`
+  and `rgtB` **default** to SPREAD, so both two-hand side cells were dead on arrival.
+- **Z was −1.00 … 1.00** — a full body length of depth from an arm already committed sideways.
+
+TEST 12 now checks **all four axes of every cell**, plus that a side cell's X span begins *exactly*
+on the entry threshold so there is no step at the edge. It was re-proven to fail on the old numbers.
+
+**ABOVE is deliberately unchanged** — it was not what was reported, and its Y span (the axis anyone
+uses there) does start at the zone edge. Its X, Z and SPREAD carry the same optimism the sides did.
 
 ### The scene stepper — `[p mb_stepper]`, at ABOVE × two hands
 
 The one FIRE cell. No MAP button, no FROM/TO: it does not drive a parameter, it advances the song.
+
+### ✅ AND THE LOCKOUT WAS THE SECOND HALF — `live.observer` reports a CHANGE (2026-10-06, fifth round)
+
+Reported from Live once the walk worked: **"it worked for moments, broken and inconsistent — it
+caused one advance and then it stopped working."** That is a stuck lockout, and the cause is one
+sentence of the Live API that the whole design leaned on without checking:
+
+> `live.observer` sends a value **on each change** of the property.
+
+**A scene that starts without ever blinking never changes `is_triggered`.** It is 0 before the
+fire and 0 after, so Live sends **no notification at all** — and the lockout, which waits for that
+0, is released only by the `[del 8000]` failsafe. **That is the guard becoming the timer it was
+explicitly designed not to be**, and it is the normal case whenever the **transport is stopped**
+(which is exactly when the user tried it) or Global Quantization is None. Hence "one advance, then
+nothing", and hence inconsistent: raise again after eight seconds and it works.
+
+**The fix is to ask as well as listen.** `live.observer`'s own `bang` method: *"Sends current value
+of selected property of current object to the left outlet."* 120 ms after the fire the stepper
+bangs the observer:
+
+| the re-read answers | |
+|---|---|
+| `is_triggered 1` | still queued, waiting for the bar — **the lockout stands**, and the notification will release it |
+| `is_triggered 0` | already started — **release it now**, which is the release the notification would never have sent |
+
+`verify_cells.py` **TEST 34** is that case, and **removing the single re-read patchline fails it
+with `fired == [0]`** — one advance and then nothing, the reported symptom exactly. **TEST 26 had
+to be narrowed**, which is the interesting part: it used to assert "the failsafe releases a lock
+Live never reported", and that scenario is now the *common* one and belongs to the re-read. What is
+left for the failsafe is the genuinely stuck case — queued when the re-read asks, then Live silent
+for ever. A failsafe that was quietly covering the main path is a failsafe that was hiding a bug.
+
+**The lockout now says who released it**, which is the line that would have caught this in one
+raise: `locked`, every `is_triggered <v>` Live sends, then either `unlocked by Live` or
+`unlocked by the 8 s FAILSAFE - Live never reported the scene starting, so the guard ran as a timer`.
+
+> **A wrong turn worth recording, because it nearly became a bug.** Two shipped devices put
+> `[route button_matrix_grabbed]` on `live.observer`'s left outlet, and eleven put a `[t ... l]`
+> there. That reads as strong evidence that the left outlet sends `<property> <value>`, and it would
+> have meant the build's `[t i]` was wrong — so the change was one edit from being made. **The
+> refpage says the opposite outright:** left outlet *"Sends the current value of the selected
+> property… may be int, float, symbol, id nn"*, and the `bang` method's example output is `Drums`,
+> not `name Drums`. Those devices are observing *children*, whose values **are** id lists. **The
+> reference implementation is evidence, not proof — it answers "how is this normally done", not
+> "what does this object emit".** For the second question, the refpage wins. (`property <name>` as
+> a *message* was confirmed the other way: 7+ stock devices use exactly that, so the build is right
+> there too.)
+
+### ✅ FOUND IT — `uzi`'s index and carry outlets were swapped (2026-10-06, fourth round)
+
+**This was the actual fault, and three console lines caught it in one raise:**
+
+```
+mb_stepper: count 8
+mb_stepper: a scene path resolved to id 0 - no object there.
+live.object: get: no valid object set
+```
+
+`getcount` was fine all along — `count 8`. **`[uzi]`'s outlets are not what the build assumed.**
+From its own refpage: outlet 0 is the bang, outlet **1** is *"Done banging bang (carry)"*, outlet
+**2** is *"Current Index"*. The second argument *"sets the base value for the **right outlet
+count**. The base value defaults to 1"* — which settles both which outlet carries the index and
+that it counts from 1. The build read **outlet 1 as the index and outlet 2 as the done-bang**.
+
+So the walk never iterated. It ran **exactly once**, off the done-bang, and `[t i b]` turned that
+bang into `0`:
+
+```
+candidate = (0 + -1) % 8   ->   -1      (C's % truncates toward zero, and Max's expr is C)
+path live_set scenes -1    ->   id 0
+live.object set to id 0    ->   "get: no valid object set"
+```
+
+One attempt, one `id 0`, no `fired` line — and no `no scene has a clip` line either, because the
+"nothing playable" check was wired to the index outlet and so was being fed 1, 2, 3… instead of a
+single bang. **Every line of that console output, including the two that were missing, follows from
+this one swap.**
+
+**The harness had the same swap, with a comment stating the wrong belief outright** —
+*"Per iteration Max sends the index out the middle outlet, then a bang out the left; the right
+outlet carries once the whole loop is done."* Correcting the model against the refpage turned
+**89/89 into 68/89**: twenty-one assertions across every stepper test. Fixing the two patchlines
+put it back to 89/89.
+
+> **This instance corrects the lesson the fourth one drew.** That section says the replay method's
+> weak point "is not the model of Max, it is the model of Live". **That is now too comfortable.**
+> Max's semantics are *small*, not *known* — and an outlet order got it wrong for weeks, in both
+> the patch and the model, because the same wrong belief wrote them both. The honest rule is:
+> **every assumption that lives in both the patch and the harness is untested by construction.**
+> Those are the ones to go and read, and the refpage is thirty seconds away.
+
+**Also changed, from reading the reference implementation:** the scene path is now built with
+`[prepend path live_set scenes]` rather than `[sprintf path live_set scenes %ld]`. **Six shipped
+Ableton devices build LOM paths this way — `Vector Map`, `Vector Grain`, `Vector Delay`,
+`Vector FM`, `Emit`, `Bouncy Notes` — and of all 142 stock devices scanned, not one uses `sprintf`
+for a path.** It also deletes the `%ld` numeric-format question outright: no format string, no
+type to get wrong, the index goes in as the atom it already is.
+
+### ⚠ THE STEPPER NOW SAYS WHERE IT STOPPED — read the Max console first (2026-10-06, third round)
+
+**The whole of the available evidence was "it detects both hands but does not even say how many
+scenes there are", and that second half was a defect in the readout, not a second bug.** The
+window builds `scene / count` with `[sprintf %ld / %ld]`, and sprintf's **hot inlet is the current
+scene** — which only ever arrived when something fired. So the one raise that most needed to
+report, the one that fires nothing, was structurally the one that could not. CLAUDE.md claimed
+this readout was "the five-second check" for a broken `getcount`. **It could never have been.**
+
+Both numbers now leave the stepper on every raise, and the same facts go to the Max console,
+because the mapping window can be shut. **Open the console, raise both hands once, and read:**
+
+| The console says | What it means |
+|---|---|
+| **nothing at all** | the raise never got in. `valid`/BODY lamp, `Input` mode, the 1000 ms fire-arm block, or the lockout — not the stepper's Live side at all |
+| `count 0` | Live answered, and the Set genuinely has no scenes |
+| **no `count` line** but the raise got in | `getcount` is not answering — the `live.path` has no path, so `path live_set` never ran. Check `live.thisdevice` |
+| `count 8`, then nothing | the count is fine and the walk died. The next line localises it |
+| `a scene path resolved to id 0` | `path live_set scenes N` found no object. **This was the `uzi` swap above** — if it returns, suspect the candidate arithmetic, and print the candidate |
+| `no scene has a clip` | the walk completed and every scene reported `is_empty 1`. **Session View rows, not Arrangement** |
+| `fired 2` | the stepper did its whole job and told Live to fire scene 2. Anything still wrong after this is Live's side: quantization, clip launch modes, or the track |
+
+`[print mb_stepper]` prefixes the object name itself, so the message boxes no longer repeat it —
+the `mb_stepper: mb_stepper:` doubling in the first capture above is fixed.
+
+**The lockout lines, read the same way:** `locked` then `unlocked by Live` is the healthy path.
+`locked` then `is_triggered 1` then `unlocked by Live` is the healthy path *with* quantization.
+`locked` then **`unlocked by the 8 s FAILSAFE`** means Live never reported and the re-read found it
+still queued — the guard ran as a timer, and that is the one line that should never appear twice in
+a performance.
+
+The readout also reads honestly before anything has fired: **`0 / 8`** — no scene yet, eight found —
+instead of staying blank.
+
+> **Every LOM message in the stepper was checked against the official docs on this round, and all of
+> them are right.** `Scene.is_empty` (get), `Scene.is_triggered` (get, observe), `Scene.fire`,
+> `getcount` → `live.path`'s **right** outlet, `path` is *"same as goto"* and so does emit the id on
+> the **left** outlet, `live.thisdevice`'s **left** outlet is the device-loaded bang, and an id is
+> *"a list of the symbol `id` and an integer"* — which is why the build carries it with `[t b l]`
+> rather than stripping it. Sources: the installed refpages in
+> `/Applications/Max.app/Contents/Resources/C74/docs/refpages/m4l-ref/`, `docs.cycling74.com/reference/live.path`,
+> `docs.cycling74.com/apiref/lom/scene/` and the Live API Overview. **So the remaining fault is not a
+> wrong message, and guessing at one again is wasted time — make it speak and read what it says.**
+
+### ⚠ READ THIS BEFORE DEBUGGING THE STEPPER AGAIN — `scenes` are SESSION VIEW ROWS
+
+**The presentation Set has 8 scenes and not one clip in any of them.** Decoded on 2026-10-06
+straight out of `MoveBeat Live presentation Project/MoveBeat Live presentation.als`:
+
+| | |
+|---|---|
+| scenes | **8** — so `getcount scenes` answering 8 is correct, not a fault |
+| session clip slots | 88, and **0 hold a clip** |
+| where the one MIDI clip is | the **Arrangement** (`MainSequencer > ArrangerAutomation > Events`) on `1-MoveBeatSynth` |
+| Global Quantisation | 4 = **1 Bar** — correct, matches the checklist |
+
+So the stepper walked all 8 scenes, found every one empty, and fired nothing — **which is exactly
+what it is designed and verified to do** (`verify_cells.py`: "a Set with no playable scene fires
+nothing"). The device was right and looked broken.
+
+**A scene is a row of the Session grid.** Live always keeps empty scene rows below the ones you
+filled, which is the whole reason the stepper skips empty ones and can discover the length of the
+piece. **A song built in the Arrangement has no scenes to fire at all.** Session View, clips in the
+grid, is not an implementation detail here — it is the premise.
+
+> **What was actually fixed on this round, then, is the silence.** A raise that finds nothing
+> playable now writes **`no clips`** into the scene readout and a full sentence into the Max
+> console. Nothing about the walk changed. This is the third separate instance in this project of
+> *"correct behaviour, no feedback, hours lost"* — the mock-`valid` trap and the BODY lamp are the
+> other two — and the lesson is the same each time: **every refusal needs a voice.**
+
+**Also found in that Set, and it is a documented trap:** two tracks carry `MoveBeatSynth`
+(`1-MoveBeatSynth` and `5-MoveBeatSynth`). `udpreceive 7500` cannot bind twice — **the second
+instance fails silently.** Delete one before blaming anything else for missing parameter movement.
+
+### ⚠ AND IT COULD NOT ADVANCE AT ALL UNTIL 2026-10-06 — `getcount` is a `live.path` method
+
+Reported from Live: **with three scenes, every raise jumped to the first scene and the song never
+advanced.** Three things had to line up to produce that, and each is a trap worth knowing.
+
+**1. `getcount` is a `live.path` method, not a `live.object` one.** The build asked `live.object`
+for `getcount scenes`. `live.object` has no such method, so Live answered **nothing** — no error
+that reaches the patch. Max's own refpage is unambiguous: `getcount` is listed under `live.path`,
+and *"Sends a `count` message to the **right outlet**, containing the name of the child and its
+number of entries"* — `count scenes 3`. So it is `getcount` → `live.path`, and the reply is
+`route count` → `zl nth 2` off **outlet 2**. (No shipped device could settle this: all 139 were
+scanned and **not one uses `getcount`.** Max's refpages were the reference instead.)
+
+**2. `% 0` does not raise in Max — it quietly returns 0.** With no count, every candidate came out
+`(k + current) % 0` = **0**, so the stepper fired scene 1 for ever and looked like a logic bug in
+the walk rather than a missing query. The modulo now carries the usual no-ternary zero guard, and
+`[uzi 0]` replaced `[uzi 1]` so that **a count that never arrives fires nothing at all** — an
+obviously dead stepper is a bug you can see; always-the-first-scene is one you have to reason about.
+
+**3. The test stub answered `getcount` on the wrong object, and so passed.** `verify_cells.py`
+reported 54/54, then 65/65, on a stepper that could not advance a scene. **This is the third time
+this exact failure mode has been recorded in this file**, and the pattern is now unmistakable: the
+replay method's real limit is not the model of Max, it is the model of *Live*. The stub is strict
+now — `live.object` records a complaint if asked for `getcount`, and `live.path` answers outlet 0
+on every `path` message but outlet 1 **only when the id changes**, which is what Live does.
+
+**A second, latent bug fell out of writing that stub honestly.** The stepper read its scene ids off
+`live.path` **outlet 1**, which fires only when the id *changes* — so asking about the same scene
+twice in a row got one answer and the second query died silently. Three scenes never hit it;
+**a Set with one playable scene hits it on every raise after the first.** Both reads moved to
+outlet 0, which answers every `path` message. `verify_cells.py` TEST 29 is that case, and reverting
+that single patchline fails it and nothing else.
+
+> The cells' own `live.path` objects were checked and left alone. `live.path live_set view
+> selected_parameter` **should** read outlet 1 — there the watch behaviour is the point, since Live
+> pushes a parameter when the user clicks one. The two in `dontMapToSelf` read outlet 1 into *cold*
+> inlets that retain their last value, and the retained value is always the right one, so they work.
+> Worth knowing, not worth changing before a deadline.
 
 **Nothing positional is baked in.** The scene count is asked of Live on *every* raise with
 `getcount scenes`, and each candidate's `is_empty` is read live. Live always leaves trailing empty
@@ -220,6 +529,14 @@ makes the end wrap to the beginning, so "restart the piece" is the same binding 
 scene's `is_triggered`: 1 while it is queued and blinking, 0 the moment it actually starts. The
 stepper unlocks on the 0. The listener is opened only *after* firing, so the observer's own report
 at the moment it is armed cannot unlock it straight away.
+
+**The lock is set BEFORE the fire, and that order is forced.** With the fire first, Live can report
+`is_triggered` 1 *and* 0 before the lock exists — at Global Quantization None, or on a raise that
+lands exactly on a downbeat — both reports are dropped by the still-shut unlock gate, and the 8 s
+failsafe ends up running the lockout on every raise. That is the guard quietly becoming the timer it
+was designed not to be. It used to depend on patchcord fan-out order, which CLAUDE.md says never to
+rely on; `verify_cells.py` TEST 31 fires a scene that starts inside the `call fire` and fails if the
+order is reversed.
 
 > **There is one timer, and it is a failsafe, not the mechanism.** If Live never reports — the
 > scene was deleted, or it launched between arming and firing — the stepper would stay locked for
@@ -241,8 +558,8 @@ Ableton's own `Harmonic Filter.amxd` uses. `[window flags float, window exec]` v
 keeps it on top while you click a parameter in Live; without float it disappears the moment Live
 takes focus and MAP cannot be driven at all. `Vector Grain.amxd` sets its flags the same way.
 
-The window is 500 × 281 and also carries four long **mock body sliders**, so the whole layer can
-be exercised without the Max editor open beside Live.
+The window is 526 × 309 and also carries four long **mock body sliders** and the global `ATTACK`
+numbox, so the whole layer can be exercised without the Max editor open beside Live.
 
 ### The device panel gained two readouts
 
@@ -256,11 +573,26 @@ be exercised without the Max editor open beside Live.
 The step-by-step is in **"THE LIVE TEST"** at the top of this file; do not duplicate it here.
 The two things that test cannot settle:
 
-- **The zone thresholds are still derived, never measured.** 1.15 body lengths to the side, head
-  height plus 0.15 above. Reasoned from anatomy and never checked against a real dancer. If the
-  natural dance posture is wider, the zones latch while standing still. **Still the most likely
-  thing in the project to be wrong**, and it is one line at the top of `[p mb_zones]`.
+- **The zone thresholds have been revised once from a real report, and still never measured.**
+  0.75 body lengths to the side (was 1.15), head height plus 0.15 above. The side figure moved
+  because a performer found the old one unreachable; the new one is reasoned, not observed. The
+  risk has also **swapped direction**: at 0.75 the danger is no longer that the zone is too far to
+  reach but that natural dance movement latches it while standing still. A hand at rest sits around
+  0.36, so there is room — but watch for it. One line in `zone_constants.py`, then the three
+  rebuild commands.
+- **ABOVE's X, Z and SPREAD spans have not been revisited** — same class of problem as the side
+  spans just fixed, and nobody has used those axes yet.
+- **What ATTACK should actually be.** 250 ms is a starting point, and it trades against the 60 ms
+  side commit. Both are now adjustable without a rebuild, which is the point.
 - **Whether a mapping survives save/reopen of the Set.** Never confirmed end to end.
+- **Whether the stepper walks a whole piece in Live.** Four faults found and fixed on 2026-10-06.
+  A scene **has** now been seen to launch from a raise — that much is confirmed — but it advanced
+  once and stuck, which was the lockout fault, and **the fix for that is tested but not yet watched
+  running.** What to check next: raise, let it advance, raise again immediately (nothing should
+  happen), let the scene start, raise again (it should advance). With the transport **stopped** as
+  well as running, because stopped is the case that exposed it.
+- **The 120 ms re-read delay is a guess.** Long enough that Live has settled the launch, short
+  enough not to be felt. If a raise ever releases its own lockout early, that is the number.
 
 ### Known limitation, stated plainly
 
@@ -293,7 +625,8 @@ parameter's name alongside the path and verify it matches on restore. **Not buil
 | **Both halves are Max for Live devices** | **Done and verified in Live 2026-09-05** — generated by `build_devices.py`, see below |
 | **Movement → sound, end to end inside Ableton** | **Working 2026-09-05.** Three slots drove three separate parameters audibly at once, from the mock body |
 | The eight mapping cells + MAP button | **Built and verified 2026-09-22**, `verify_cells.py` 37/37. Generated by `build_cells.py` |
-| The scene stepper (`abvB`) | **Built and verified 2026-09-22**, `verify_cells.py` 54/54 |
+| The scene stepper (`abvB`) | Built 2026-09-22; **four separate faults, all found on 2026-10-06** — `getcount` asked of the wrong Live object, the deferred-API race, `[uzi]`'s index and carry outlets wired the wrong way round, and a lockout waiting for a `live.observer` notification that is never sent when a scene starts without blinking. **The last two were each diagnosed from a console capture from Live, not from analysis**, which is why the device now reports every step. `verify_cells.py` **99/99** against a strict stub whose `uzi`, `expr`, `trigger`, `deferlow` and `live.observer` models were all corrected in the process. **It still needs clips in the Session grid** — see the section above |
+| Zone geometry + timing in one file, the attack envelope | **2026-10-06**, after the first session in Live — see the zone-mapping section |
 | Controller presentation view | **Built 2026-09-05** — 454 × 150 px, six rows + zone monitor |
 | Synth presentation view | **Built 2026-09-05** — 450 × 140 px, 24 parameters in four columns |
 | Live restoring saved values | **Fixed and confirmed in Live 2026-09-05** — a new Set saved and reopened with every setting intact, in both devices |
@@ -333,7 +666,7 @@ way `MAPPING.md` governs the six-slot matrix.
 | Piece | State |
 |---|---|
 | `[p mb_body]` — body-relative coordinates | **Built, 7/7 verified.** Runs in Live; not yet watched running in Max |
-| `[p mb_zones]` — zones, hysteresis, all the timing | **Built, 9/9 verified.** All nine cells verified driveable from the sliders |
+| `[p mb_zones]` — zones, hysteresis, all the timing | **Built, 11/11 verified.** Retuned 2026-10-06 by `tune_zones.py` from `zone_constants.py` |
 | Mock sliders + 12-toggle zone monitor | Built; **usable since 2026-09-05** via the new `MOCK - sliders only` mode |
 | The eight cells: MAP, `live.remote~`, FROM/TO | **Built 2026-09-22.** See the zone-mapping section at the top |
 | The scene stepper | **Built 2026-09-22** — live scene query, skip empty, wrap, lockout on Live's report |
@@ -924,6 +1257,86 @@ Re-running the broken build against the strict stubs gives 22/24 — it fails wh
 > The rule this suggests: a stub at a boundary should be written to model what the real thing
 > *refuses*, not only what it accepts. A stub that never says no cannot fail a test.
 
+**It happened a third time, on 2026-10-06, and the third one is the clearest.** The stub answered
+`getcount scenes` on `live.object`. Live has no such method there — it is a `live.path` method whose
+reply leaves a different outlet — so the stepper could not read the scene count, every candidate
+came out `(k + current) % 0` = 0, and **the device fired the first scene on every raise while the
+suite reported 65/65**. The same stub was also lenient about `live.path`'s two id outlets, which hid
+a second bug underneath the first.
+
+What the three instances together say, and it is sharper than the original rule: **the replay
+method's weak point is not the model of Max, it is the model of Live.** Max's semantics are few and
+were got right early. The Live Object Model is large, and every stub of it is a guess that the
+suite then treats as ground truth. Two mitigations actually worked here — write the stub from Max's
+own **refpages** rather than from memory (`docs/refpages/m4l-ref/*.maxref.xml` inside Max.app, which
+is where `getcount`'s outlet is stated outright), and make every stub **refuse** what Live refuses,
+so the suite can fail. A third would have caught it sooner and costs nothing: when no shipped device
+uses an API message — all 139 were scanned and none uses `getcount` — treat that as a sign to read
+the reference, not as permission to guess.
+
+### ⚠ AND IT HAPPENED A FOURTH TIME — THE STUB ANSWERED LIVE *IN LINE* (2026-10-06, later)
+
+**The stepper still fired nothing at all in Live — not the first scene, not any scene — while the
+suite reported 78/78.** This is the fourth instance, and it is the one that finally names the
+mechanism rather than the symptom.
+
+Max's refpages say it outright, in the description of **both** `live.path` and `live.object`:
+
+> *"The Live API runs in the main thread in Live, and all messages to and from the API are
+> **automatically deferred**."*
+
+`[p mb_stepper]` asked Live for the scene count and banged the walk **from two branches of the same
+`[t b b b]`** — ask on the middle outlet, walk on the left. That works only if `live.path` answers
+*synchronously*, and the stub did exactly that: `s.emit(oid, 2, ['count', child, n])`, in line,
+inside the same delivery. In Live the raise arrives in the **scheduler thread** — `[udpreceive
+7400]` for a real body, `[metro 33]` for the mock auto-motion, both high priority — so every API
+message is deferred to Live's main thread and the `count` reply lands **after** the walk has
+already run with `[uzi 0]`'s own argument of 0. Zero candidates, zero fires, and the
+"nothing playable" branch printing `no clips` on every raise.
+
+**The giveaway was in the patch all along, and it was a single stale comment.** The harness
+modelled `[deferlow]` as a pass-through with `# the model ignores deferral - a stated limit`.
+The stated limit *was* the bug. A model that names what it does not simulate is still a model that
+does not simulate it.
+
+Two changes, and the second matters more than the first:
+
+| | |
+|---|---|
+| **`[deferlow]` on the raise**, between `[sel 1]` and the arm/lock gates | moves the whole raise onto Max's main thread, where the Live API answers in line — which is the behaviour every other test in the suite describes |
+| **the walk is started by the ANSWER**, not by a parallel branch | `[t i i]` → `[t b i i]`: store the count, set `uzi`'s length, *then* bang it. `[t b b b]` loses its third branch and becomes `[t b b]`. No ordering assumption is left to be wrong |
+
+**`deferlow` and not `defer`:** `defer` passes through immediately when it is already on the main
+thread, `deferlow` always re-enters from the queue. The stronger one is wanted here because the
+raise can also come from a mouse-dragged mock slider, which *is* the main thread — and a guard
+that behaves differently depending on which thread provoked it is the thing being fixed.
+
+**`verify_cells.py` now models the deferral**, which is the part that keeps this fixed: `[deferlow]`
+queues instead of passing through, `live.path`/`live.object` replies are held until the event ends,
+and `flush()` is Live's main thread catching up. **TEST 32 asserts a deferred raise still fires, and
+it was proven to fail on the pre-fix wiring — `fired == []`, nothing at all, which is exactly what
+was reported.** 99/99 now.
+
+> The rule the fourth instance adds, and it generalises past Live: **a stub must model the
+> boundary's *timing*, not only its vocabulary.** Getting every message name and outlet right still
+> certified a device that could not work, because the one thing the stub got wrong was *when* the
+> answer comes back. Asking a question and reading its answer in the same event is an assumption —
+> write it down, or have a test that breaks when it is false.
+
+**Three model inaccuracies were found and closed on the same round**, two of them while chasing a
+single stray decimal point. They are listed because each one is the kind that hides a real fault:
+
+| The model used to | Max actually | Why it mattered |
+|---|---|---|
+| treat `[deferlow]` as a pass-through, commented *"the model ignores deferral - a stated limit"* | hand the message to the **main thread** | the stated limit *was* the bug — see above |
+| pass a value through `[t i]` / `[t f]` untouched | **cast**, and on a list take the **first element** | the second half is the whole `mb_body` mock-slider trap, which the model could not have caught |
+| substitute every `expr` variable as a float, `$i` included | `$i` is an **int** variable and an `$i` expression returns an **int** | `[sprintf %ld]` is fed from one, so the scene readout would have shown `1.` in Live. The modulo in the candidate walk is also an `$i` expression |
+
+The last two were caught by a test asserting on a console string — `fired 1` — rather than on a
+number, and `'fired 1' in printed` was false for `'fired 1.0'`. **Asserting on the text a device
+reports catches type errors that asserting on its values cannot**, because a comparison like
+`1 == 1.0` is true and a printed line is not.
+
 ### Do not re-serialise a .maxpat with sorted keys
 
 Max writes its JSON in insertion order with 4-space indent and no trailing newline. Rewriting the
@@ -1104,9 +1517,16 @@ synth/             Max 9 (Mac) — two devices + shared DSP
                      MAPPING.md     — movement→parameter contract, tuning guide
                      ZONES.md       — THE ZONE LAYER + THE ABLETON PLAN. Read this for
                                       anything zone-, trigger- or Live-related
-    verification/    verify_body.py, verify_zones.py, verify_cells.py — replay the real
+    verification/    zone_constants.py   — THE source for every zone threshold, delay and
+                                      span, with the reasoning. Everything else imports it,
+                                      tests included. Change a zone number HERE
+                     tune_zones.py       — writes those numbers into [p mb_zones] in place,
+                                      by walking the graph. Idempotent. RUN IT FIRST
+                     verify_body.py, verify_zones.py, verify_cells.py — replay the real
                      .maxpat graphs
-                     build_zone_layer.py — regenerates mb_body + mb_zones from HEAD
+                     build_zone_layer.py — built mb_body + mb_zones once, in August. NOT
+                                      idempotent and cannot be re-run on the current patch;
+                                      tune_zones.py is how their numbers change now
                      build_cells.py      — regenerates the eight mapping cells, the
                                       scene stepper and the mapping window. Idempotent.
                                       Takes the cell keys to build as arguments
@@ -1169,11 +1589,14 @@ Live plan — **read it before touching anything zone-related.**
   heard the matrix respond. Every part of that path is independently verified, so this is expected
   to work — but "expected to work" is what the tracking-distance bug looked like too.
 
-- **The zone thresholds are derived, not measured.** ⚠️ The most likely thing to be wrong. The
-  side zones trigger at 1.15 body lengths from the spine (roughly 58 cm), a figure reasoned from
-  anatomy and never checked against a real dancer. If the natural dance posture is wider than
-  that, the zones latch while standing still. **Check this first**, with the mock and then with a
-  real body. The thresholds are one line at the top of `[p mb_zones]`.
+- **The zone thresholds are derived, and now revised once from a real report.** ⚠️ Still the most
+  likely thing to be wrong. The side zones triggered at 1.15 body lengths from the spine (roughly
+  58 cm), reasoned from anatomy; **2026-10-06 a performer found that unreachable in practice and it
+  is now 0.75.** That was the first measurement of any kind against a body, and it moved the number
+  by a third — so assume the remaining figures are wrong by about as much until someone dances in
+  front of them. The risk has swapped direction too: at 0.75 the danger is the zone latching while
+  standing still rather than being out of reach. The thresholds are one line in
+  `synth/docs/verification/zone_constants.py`, then the three rebuild commands at the top of it.
 
 - **The ABOVE threshold rides on `head.y`, and the head joint jitters.** Hysteresis covers small
   noise; a large head-tracking glitch moves the boundary and could fire a zone.

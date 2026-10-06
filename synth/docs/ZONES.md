@@ -165,15 +165,41 @@ timing. **No Live objects** — the whole subpatch is testable on the Mac agains
 | 1 | hand-busy pair `L R` — drives the freeze rule on the six-slot matrix |
 | 2 | fire-armed, 0/1 |
 
-### The constants, in one place
+### The constants, in one place — and that place is now a file
 
-| | Enter | Leave |
-|---|---|---|
-| ABOVE | `head.y + 0.15` | `head.y + 0.00` |
-| SIDE | `\|x\| > 1.15` | `\|x\| > 1.00` |
+Since **2026-10-06** every number below lives in
+`synth/docs/verification/zone_constants.py`, with the reasoning for each beside it. Nothing
+else holds a copy: `tune_zones.py` writes them into `[p mb_zones]`, `build_cells.py` bakes the
+spans into the cells, and both verification suites assert against the same file.
+`verify_zones.py` TEST 0 reads the thresholds back out of the patch and fails if they disagree,
+so a forgotten rebuild is loud rather than silent.
 
-Both in body lengths, so they mean the same thing for any performer at any distance. Commit
-delay 200 ms; fire re-arms 1000 ms after tracking returns.
+| | Enter | Leave | Commit |
+|---|---|---|---|
+| ABOVE | `head.y + 0.15` | `head.y + 0.00` | **200 ms** |
+| SIDE | `\|x\| > 0.75` | `\|x\| > 0.60` | **60 ms** |
+
+Both in body lengths, so they mean the same thing for any performer at any distance. Fire
+re-arms 1000 ms after tracking returns.
+
+**The side figures were 1.15 / 1.00 with a 200 ms commit until 2026-10-06.** They changed on the
+first report from a performer rather than from a model, and the report was specific: entering a
+side zone needed the arm almost horizontal, the knob then travelled only about **0.3** of its
+range because the old span chased 1.79 body lengths — a locked-out arm — and the entry felt late.
+
+| What changed | From | To | Why |
+|---|---|---|---|
+| side enter | 1.15 | **0.75** | the zone itself starts closer in: 16–29° of arm elevation rather than 31–63°, and still clear of a hand hanging at rest (~0.36) |
+| side leave | 1.00 | **0.60** | the same 0.15 hysteresis band, moved with it |
+| side commit | 200 ms | **60 ms** | ABOVE keeps 200 ms because the scene stepper lives there and a wrong answer skips a section of the piece. A side cell only moves a knob, so it is not worth 200 ms of latency |
+
+### The commit delay is per zone now, and the timer restarts
+
+Worth stating precisely, because it bounds what the shorter side commit can cost. The delay is
+re-armed on **every** change of hand count, not started once: so a two-hand entry whose hands land
+within 60 ms of each other still never flashes the one-hand cell. Land further apart and the
+one-hand cell does go live, for as long as the gap between the hands — and a FADER keeps whatever
+it reached. The attack envelope is what makes that survivable rather than ruinous; see below.
 
 ### Order inside a frame is load-bearing
 
@@ -192,19 +218,25 @@ lag by a frame with nothing in the Max console.
 ### Verified
 
 `synth/docs/verification/verify_zones.py` replays both real graphs chained together, with a
-virtual millisecond clock for `[del]`. **9/9 PASS:**
+virtual millisecond clock for `[del]`. **11/11 PASS:**
 
 | Test | Result |
 |---|---|
+| The patch's own thresholds and delays match `zone_constants.py` | PASS |
 | Rest pose activates nothing | PASS |
-| One hand up commits at ~200 ms, nothing before | PASS |
+| One hand up commits at ~200 ms in ABOVE, nothing before | PASS |
 | Raising both hands never flashes the one-hand cell | PASS |
 | Hand up **and** far left reads ABOVE, never LEFT | PASS |
 | Side zone latches, and holds through the hysteresis band | PASS |
 | 40 frames of jitter across the threshold → 1 output change | PASS |
+| **A side zone commits in 60 ms, not 200** | PASS |
 | Losing the body releases every flag | PASS |
 | Fire stays blocked for 1 s after tracking returns | PASS |
 | Hand-busy pair tracks both hands correctly | PASS |
+
+Every position those tests use is computed from `zone_constants.py` rather than written as a
+literal. That is not tidiness: the old suite carried its own copy of 1.15, so it would have passed
+unchanged against a patch tuned to anything at all.
 
 **Not yet run in Max.** Structure and behaviour are verified against the real object graph; the
 device has not been opened with a live body in front of the sensor.
@@ -267,8 +299,10 @@ The structure divides cleanly:
 | Mode | Behaviour | On leaving the zone |
 |---|---|---|
 | **FADER** | Continuous. Movement inside the zone sweeps the parameter. | **Holds** the last value. |
-| **SWITCH** | Momentary. In the zone = on. | **Off.** |
+| **SWITCH** | Momentary. In the zone = on. | **Off** — glided, not stepped, since 2026-10-06. |
 | **FIRE** | Discrete. Each entry advances the scene stepper. | Nothing. |
+
+Entering any zone is a **glide, not a step** — see *The attack envelope* under Timing.
 
 The asymmetry between FADER and SWITCH is deliberate and coherent: a fader's value is a position
 you *set*, a switch is something you *hold*.
@@ -285,16 +319,22 @@ Each FADER cell picks what drives it:
 `SPREAD` is the natural default for any **two-hands** cell — opening and closing the arms is a
 far more dance-like fader than either hand's absolute position.
 
-### FADER pickup — mandatory, not optional
+### ~~FADER pickup — mandatory, not optional~~ — removed 2026-09-22, and replaced 2026-10-06
 
-A fader holds its value when the hand leaves. The next time the hand returns it will be somewhere
-arbitrary, and without protection **the parameter jumps.**
+~~A fader holds its value when the hand leaves. The next time the hand returns it will be somewhere
+arbitrary, and without protection **the parameter jumps.** So the parameter does not move until the
+incoming movement **crosses** the held value — exactly Live's own `Pickup` takeover mode.~~
 
-So the parameter does not move until the incoming movement **crosses** the held value. This is
-exactly Live's own `Pickup` takeover mode for hardware controllers, and the reason is identical.
+**Pickup was removed** because it latched cells dead: leaving a side zone drags the fader to
+exactly 0.00, and "crosses the held value" is then true for no value at all, so the cell died
+after one use. CLAUDE.md records the episode.
 
-This also does quiet double duty: it is what makes "walked away, came back" feel smooth rather
-than jolting.
+**But the problem it was there to solve was real,** and removing pickup left it unsolved — the
+knob stepped to its new position in one frame on every entry. **The attack envelope (2026-10-06)
+is the answer that works:** instead of refusing to move until the movement catches up, the cell
+*crossfades* from where the knob was to where the movement says it should be, over `ATTACK` ms.
+See **The attack envelope** under Timing. It has no degenerate case, because it is arithmetic over
+time rather than a condition that can be true of nothing.
 
 ### SWITCH — map the wet, not the bypass
 
@@ -356,13 +396,44 @@ This is the direct answer to the requirement the whole design started from: *"I 
 move my whole leg through space to reach peak movement."* Narrow the input span and a small,
 comfortable gesture covers the parameter's full travel.
 
-### Set it by moving, not by typing
+### ~~Set it by moving, not by typing~~ — there is no SET RANGE button
 
-Each cell has a `SET RANGE` button: press it, move through the span you want, release. The
-controller records min and max.
+**Reversed by the build, 2026-09-22.** The zone already fixes how much movement is available, so
+the span is **baked into each cell** and there is nothing to calibrate. One fewer control on a
+window that had no room for it.
 
-Nobody knows what `0.42 m` means. Everybody can show "from here to here." Typing metres into a
-number box would make this a spreadsheet; learning it from the body makes it an instrument.
+What that costs is written down honestly: the baked span has to be *right*, and nothing on screen
+says when it is not. **It was not right.** A cell whose span reaches further than the arm actually
+goes normalises to a fraction of 0..1, the knob travels part way and stops, and the only symptom is
+"it feels like it is not working". That is precisely what was reported on 2026-10-06, measured at
+about **0.3** of the knob's travel.
+
+**The spans as built**, from `zone_constants.py` (body lengths; `lo` is the zone edge, `hi` is as
+far as the gesture goes):
+
+| zone | X | Y | Z | SPREAD |
+|---|---|---|---|---|
+| ABOVE | −1.79 … 1.79 | **1.60 … 2.40** | −1.00 … 1.00 | 1.00 … 3.00 |
+| LEFT | **−0.75 … −1.35** | −0.20 … 1.30 | −0.50 … 0.50 | 0.20 … 1.60 |
+| RIGHT | **0.75 … 1.35** | −0.20 … 1.30 | −0.50 … 0.50 | 0.20 … 1.60 |
+
+All four side axes changed, not only the one that was reported, because three of them were ABOVE's
+figures copied across and **every one of those three was outside the side zone itself**:
+
+- **Y was 1.60 … 2.40** — above the head. A hand that high is in ABOVE by the head rule, so a side
+  cell set to Y could never leave the bottom of its span. Dead, silently.
+- **SPREAD was 1.00 … 3.00** — two arms opened wide. Both hands are on the *same* side in a side
+  zone, so they are never that far apart. `lftB` and `rgtB` **default** to SPREAD, so both two-hand
+  side cells were dead on arrival.
+- **Z was −1.00 … 1.00** — a full body length of depth, from an arm already committed sideways.
+
+`verify_cells.py` TEST 12 now checks **all four axes of every cell** against the zone that switches
+it on, and that a side cell's X span starts *exactly* on the entry threshold so there is no step at
+the edge. It was proven to fail on the old numbers.
+
+**ABOVE is deliberately unchanged.** It was not what was reported, and its Y span — the axis anyone
+actually uses there — does start at the zone edge. Its X, Z and SPREAD carry the same optimism the
+sides did and are the obvious next thing to measure against a dancer.
 
 ### The range is stored body-relative
 
@@ -401,6 +472,49 @@ The current scene loops until the next raise. Reaching the end and raising again
 first scene — so **"restart the piece" is not a separate binding, it is the same one wrapping.**
 One of the nine cells stays free as a result.
 
+### ⚠ A scene is a SESSION VIEW ROW — and the grid has to have clips in it
+
+Decoded out of the presentation Set on 2026-10-06: **8 scenes, 88 clip slots, not one clip.** The
+song was in the **Arrangement**. The stepper walked all 8 scenes, found every one empty, fired
+nothing — exactly as specified and verified — and said nothing, so it looked broken.
+
+This is the premise rather than a detail: **the stepper fires Session scenes.** Live keeps empty
+scene rows below the filled ones, which is what lets the piece's length be discovered rather than
+configured; a song built in the Arrangement has no scenes to fire at all. And `getcount scenes`
+answering **8 when 3 are filled is correct** — the five empty rows are what `is_empty` skips.
+
+Since 2026-10-06 a raise that finds nothing playable writes **`no clips`** into the scene readout
+and a sentence into the Max console. Nothing about the walk changed; the silence was the bug. That
+is the third time in this project that correct behaviour with no feedback cost real hours — the
+mock-`valid` trap and the BODY lamp are the others — and the rule it keeps writing is
+**every refusal needs a voice.**
+
+### ⚠ It did not work until 2026-10-06 — `getcount` is a `live.path` method
+
+Reported from Live: **with three scenes, every raise fired the first scene and the song never
+advanced.** The build asked `live.object` for `getcount scenes`. There is no such method on
+`live.object`; it belongs to **`live.path`**, and Max's refpage states the reply precisely — *"Sends
+a `count` message to the right outlet, containing the name of the child and its number of entries"*,
+i.e. `count scenes 3` out of **outlet 2**. Live answered nothing, and nothing reached the patch to
+say so.
+
+What turned a missing answer into a wrong behaviour rather than no behaviour: **Max's `%` returns 0
+for a modulo by zero instead of erroring.** With no count, every candidate was `(k + current) % 0`
+= 0 — the first scene, every time. Both halves are now guarded: the modulo carries the no-ternary
+zero guard, and `[uzi 0]` means a count that never arrives tries **no** candidates, so the failure
+would be an obviously dead stepper instead of a plausible-looking wrong one.
+
+A second bug surfaced while making the test stub honest: the scene ids were read off `live.path`
+**outlet 1**, which fires only when the id *changes*. Asking about the same scene twice in a row got
+one answer and the second query died silently — invisible with three scenes, **every raise with
+one playable scene.** Both reads moved to outlet 0, which answers every `path` message.
+
+> **The reference was on disk, and it was not a device.** CLAUDE.md's rule is "read the reference
+> implementation that is already installed". All 139 shipped devices were scanned and **not one uses
+> `getcount`** — so the usual reference could not settle it. Max's own refpages could, and did:
+> `/Applications/Max.app/Contents/Resources/C74/docs/refpages/m4l-ref/live.path.maxref.xml`. When no
+> shipped device uses an API message, that is the signal to go and read, not licence to guess.
+
 ### It configures itself
 
 Two decisions already made combine into something better than either:
@@ -437,16 +551,60 @@ fires the one-hand binding on its way.
 
 ```
 first hand enters  →  do not act
-                   →  wait ~200 ms
+                   →  wait  (200 ms in ABOVE, 60 ms in a side zone)
                    →  count hands in the zone
                    →  1 → that hand's cell    2 → the two-hands cell
 ```
 
-**Global Quantization makes this free.** Live waits for the next downbeat regardless, so 200 ms
-of decision latency is inaudible. It also means hysteresis and dwell times can be generous — the
-things that prevent jitter cost nothing musically here.
+**Global Quantization makes this free — for the stepper.** Live waits for the next downbeat
+regardless, so 200 ms of decision latency before a scene fires is inaudible.
 
-FADER cells have no firing moment and so need no commit delay; they simply track.
+**It is not free for a FADER**, and this document already said so: *"FADER cells have no firing
+moment and so need no commit delay; they simply track."* The build ignored that and applied one
+delay to all three zones, and a performer felt it immediately — a hand sweeping a filter answered
+about a fifth of a second late. **Since 2026-10-06 the delay is per zone:** 200 ms where a wrong
+answer advances the song, 60 ms where it moves a knob.
+
+Not zero, because the two-hand side cells (`lftB`, `rgtB`) still need disambiguating, and because
+the delay re-arms on every change of hand count — so 60 ms covers any two-hand entry whose hands
+land within 60 ms of each other, which is most of them.
+
+### The attack envelope — the glide into a zone
+
+Added **2026-10-06**, on a performer's report: entering a zone *stepped* the parameter, and the
+step was audible.
+
+Each cell now crossfades rather than jumping:
+
+```
+out = held + env * (target - held)
+
+    held     frozen at whatever the knob had the instant the zone flag changed
+    target   the live movement value, FROM..TO as before
+    env      0 → 1 over ATTACK ms, on a smoothstep curve
+```
+
+`env` runs on its own 20 ms clock (`[line]`, the control-rate `[line~]`), **not** on the frame
+rate — a frame-driven envelope stalls the moment frames stop, and in `MOCK - sliders only` frames
+stop every time the mouse does. Smoothstep rather than a straight line because a linear ramp has a
+corner where it starts and another where it arrives, and both are audible on a filter cutoff.
+
+After the attack `env` is 1 and the output **is** the movement value, bit for bit. **This shapes
+the entry, never the tracking.**
+
+`ATTACK` is one control on the mapping window, global to all eight cells, default **250 ms**. It is
+the only global control the layer has: an attack time is a feel parameter, no arithmetic settles
+it, and baking it in would mean a rebuild and a re-drag into Live per attempt. **`ATTACK 0`
+restores the previous instant behaviour exactly**, and a test asserts that it does.
+
+One mechanism, four things it buys:
+
+| | |
+|---|---|
+| entry | the knob arrives instead of jumping — what was asked for |
+| a SWITCH leaving | the release is the same curve in the other direction, so a Dry/Wet switch no longer clicks |
+| a FADER leaving | `held` and `target` are set to the same value, so the crossfade has nothing to cross and the output is provably flat |
+| the 60 ms side commit | a one-hand cell that flashes for two frames during a two-hand entry slips its knob about **15%** of the way instead of jumping the whole way. Measured, in `verify_cells.py` TEST 19, against the same flash with the envelope switched off |
 
 ### Hysteresis and dwell
 
@@ -553,6 +711,16 @@ inside Live, and revisit this afterwards.
 
 ## Still open
 
+- **The side numbers are better, not measured.** 0.75 / 0.60 and a 0.75 … 1.35 span were chosen
+  from the one real report there has been, plus anatomy. The model predicted the old spans wasted
+  about a third of the knob's travel; the performer measured two thirds — so **the model is not to
+  be trusted to two decimal places, and the dancer is.** One line in
+  `synth/docs/verification/zone_constants.py`, then the three rebuild commands at the top of it.
+- **ABOVE's X, Z and SPREAD spans have not been revisited.** Same class of problem as the side
+  ones that were just fixed; nobody has reported it because nobody has used those axes there yet.
+- **What `ATTACK` should actually be.** 250 ms is a starting point. It trades against the 60 ms
+  side commit: a longer attack makes a brief flash cost less and makes a deliberate entry feel
+  slower. Both are on screen, so this is now tuneable while dancing rather than at build time.
 - **What one hand above the head maps to in practice.** The cells exist and take any parameter;
   which effect goes there is a musical choice, not a build decision.
 - **Whether the synth's parameters migrate from OSC to `live.remote~`.** Deferred deliberately —

@@ -31,33 +31,40 @@ THE REFERENCE IMPLEMENTATION
 
 import json, copy, collections, sys, os
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import zone_constants as Z
+
 OD = collections.OrderedDict
 P = 'synth/controller/MoveBeatController.maxpat'
 MARK = 'mbz_'                      # every generated root object's varname starts with this
 
 BODY = 'obj-178'                   # [p mb_body]   - verified, do not modify
-ZONES = 'obj-180'                  # [p mb_zones]  - verified, do not modify
+ZONES = 'obj-180'                  # [p mb_zones]  - structure verified, do not modify.
+#                                    Its NUMBERS are not frozen: tune_zones.py rewrites
+#                                    the thresholds and delays from zone_constants.py,
+#                                    which is the same file this script reads SPANS from.
+#                                    Run it first, or the zone a cell waits for and the
+#                                    span it normalises against disagree.
 
 # mb_zones outlet 0 carries nine flags in this order.
 FLAGS = ['abvL', 'abvR', 'abvB', 'lftL', 'lftR', 'lftB', 'rgtL', 'rgtR', 'rgtB']
 
+# How much movement each zone offers, per source axis, as (lo, hi) in body lengths.
+# lo is where the zone begins, hi is as far as the gesture goes.  Baked into each cell
+# rather than exposed: the zone already decides the span, so there is nothing to
+# calibrate and no SET RANGE button.
+#
+# THE SPAN MUST LIE INSIDE THE ZONE THAT SWITCHES THE CELL ON, or the cell is dead on
+# arrival - a span the zone can never reach normalises to a constant, the knob pins, and
+# nothing on screen says why.  verify_cells.py TEST 12 checks every cell for it.
+#
+# The numbers and the reasoning behind each one live in zone_constants.py, which
+# tune_zones.py also builds the zone thresholds from.  One file, so the edge a cell
+# normalises from is the same edge the zone switches on.
+SPANS = Z.SPANS
+
 # The eight parameter cells.  abvB is absent: it is the FIRE cell and belongs to the
 # scene stepper, which is built separately.
-# The default input range MUST lie inside the zone that switches the cell on, or the
-# cell is dead on arrival: mb_zones only raises a side flag once the hand is past 1.15
-# body lengths, so a 0..1 default would normalise -1.2 to -1.2, clip it to 0, and pin
-# the parameter at zero forever.  These defaults are the span of each zone itself;
-# SET RANGE then narrows them to whatever the dancer is comfortable with.
-# How much movement each zone offers, per source axis, as (lo, hi) in body lengths.
-# lo is where the zone begins, hi is full extension.  This is baked into each cell
-# rather than exposed: the zone already decides the span, so there is nothing to
-# calibrate and no SET RANGE button.  An arm reaches about 1.79 body lengths.
-SPANS = {
-    'ABOVE': [(-1.79, 1.79), (1.60, 2.40), (-1.00, 1.00), (1.00, 3.00)],
-    'LEFT':  [(-1.15, -1.79), (1.60, 2.40), (-1.00, 1.00), (1.00, 3.00)],
-    'RIGHT': [(1.15, 1.79), (1.60, 2.40), (-1.00, 1.00), (1.00, 3.00)],
-}
-
 #   key    flag   zone     hand  column  default source (0=X 1=Y 2=Z 3=SPREAD)
 CELLS = [
     ('abvL', 'abvL', 'ABOVE', 'L',  'L', 1),
@@ -158,8 +165,30 @@ def build_cell(appversion, cellid, span):
     X, Y, Z, SPREAD.  It is baked in rather than exposed: the zone already decides
     how much movement is available, so there is nothing for the user to calibrate.
 
-        hand enters the zone   ->  the knob sits at FROM
+        hand enters the zone   ->  the knob glides to FROM over ATTACK ms
         arm fully extended     ->  the knob sits at TO
+
+    THE ATTACK ENVELOPE (added 2026-10-06)
+        Entering a zone used to STEP the knob to FROM in a single frame, and the step
+        was audible - that is what the user asked to soften.  The cell now crossfades:
+
+            out = held + env * (target - held)
+
+        `held` is frozen at the value the knob already had the instant the flag changed;
+        `target` is the live movement value; `env` runs 0 -> 1 over ATTACK ms on a
+        smoothstep curve (flat at both ends, so no corner starting and none arriving).
+        After the attack env is 1 and the output IS the movement, bit for bit - this
+        shapes the entry, never the tracking.  ATTACK 0 restores the old instant step.
+
+        The same mechanism covers three things that would otherwise each need their own:
+
+        - a SWITCH's release is an attack in the other direction, so a Dry/Wet switch
+          no longer clicks on the way out;
+        - a FADER leaving the zone has `held` and `target` set to the same value, so it
+          holds flat, with or without the attack;
+        - the side commit delay could come down to 60 ms (zone_constants.py) because a
+          one-hand cell flashing for two frames during a two-hand entry now moves its
+          knob by under 5% instead of jumping it to FROM.
 
     INLETS  (Max numbers these by ascending X, never by creation order - CLAUDE.md)
         0  source list  [x y z spread valid]   HOT, once per frame
@@ -171,6 +200,7 @@ def build_cell(appversion, cellid, span):
         6  TO %         where it sits at full extension
         7  restored path (from the blob pattr, on load)
         8  CLEAR - drop the mapping entirely
+        9  ATTACK ms - the glide into and out of the zone, global to all eight cells
 
     OUTLETS
         0  mapped parameter name (symbol)
@@ -196,24 +226,28 @@ def build_cell(appversion, cellid, span):
             'this subpatcher is instantiated once per cell.  Same split as [p mb_slot].']):
         cmt(t, 20, 8 + i * 20, 700)
 
-    IX = [30, 180, 330, 480, 630, 780, 930, 1080, 1230]
+    IX = [30, 180, 330, 480, 630, 780, 930, 1080, 1230, 1380]
     names = ['source list [x y z spread valid]', 'active 0/1', 'MAP button',
              'mode FADER/SWITCH', 'source select', 'FROM %', 'TO %', 'restored path',
-             'CLEAR the mapping']
+             'CLEAR the mapping', 'ATTACK ms']
     IN = []
     for x, n in zip(IX, names):
         IN.append(box('inlet', x, 120, 30, 30, None, 0, 1))
         cmt(n, x, 96, 150)
 
     # ---- pick the chosen axis out of the frame -----------------------------
-    cmt('The list arrives once per frame.  [t l l] forces the order; never rely on',
+    cmt('The list arrives once per frame.  [t b l] forces the order; never rely on',
         30, 170, 700)
     cmt('unforced fan-out.',
         30, 190, 700)
-    tsrc = obj('t l l', 30, 220, 80, 1, 2, ['', ''])
+    cmt('Outlet 0 is the bang that re-evaluates the envelope, and it fires LAST, after',
+        30, 210, 700)
+    cmt('the frame has already been through the span, the gate and the mode.',
+        30, 230, 700)
+    tsrc = obj('t b l', 30, 250, 80, 1, 2, ['bang', ''])
     L(IN[0], 0, tsrc, 0)
     snth = obj('zl nth 1', 30, 300, 90, 2, 2, ['', ''])
-    L(tsrc, 0, snth, 0)
+    L(tsrc, 1, snth, 0)
 
     # ---- this cell's movement span for that axis ---------------------------
     cmt("The span is fixed by the zone, so there is nothing to calibrate and no SET",
@@ -256,8 +290,14 @@ def build_cell(appversion, cellid, span):
         30, 470, 700)
     cmt('and so does loss of tracking, since mb_zones drops the flag when the body goes.',
         30, 490, 700)
+    # The zone flag drives three things, and the order matters, so it goes through a
+    # trigger rather than an unforced fan-out.  Outlet 2 fires first: the envelope has to
+    # freeze where the knob is BEFORE anything downstream produces a new target.
+    tact = obj('t i i i', 180, 470, 100, 1, 3, ['int', 'int', 'int'])
+    L(IN[1], 0, tact, 0)
+
     agate = obj('gate', 30, 520, 80, 2, 1, [''])
-    L(IN[1], 0, agate, 0)
+    L(tact, 1, agate, 0)
     L(ncl, 0, agate, 1)
 
     # ---- FROM / TO: how far the knob is allowed to travel ------------------
@@ -283,7 +323,7 @@ def build_cell(appversion, cellid, span):
     cmt('reverb tail dead mid-decay.',
         430, 660, 700)
     smap = obj('expr $f2 + $f1 * ($f3 - $f2)', 430, 690, 290, 3, 1, ['float'])
-    L(IN[1], 0, smap, 0)                   # not gated: it must emit on leaving too
+    L(tact, 0, smap, 0)                    # not gated: it must emit on leaving too
     L(pfrom, 0, smap, 1)
     L(pto, 0, smap, 2)
 
@@ -299,19 +339,103 @@ def build_cell(appversion, cellid, span):
     L(mS, 0, gS, 0)
     L(smap, 0, gS, 1)
 
+    # ---- THE ATTACK: a soft entry into the zone ------------------------------
+    # out = held + env * (target - held).  A crossfade, so the output is always between
+    # two values that are themselves inside FROM..TO - it cannot overshoot, and TEST 3
+    # still holds with the envelope in the middle of the chain.
+    cmt('THE ATTACK ENVELOPE.  Entering a zone used to STEP the knob to FROM in one frame.',
+        780, 560, 760)
+    cmt('Now: out = held + env * (target - held), with env running 0 -> 1 over ATTACK ms.',
+        780, 580, 760)
+    cmt('held is frozen the instant the flag changes; target is the live movement value.',
+        780, 600, 760)
+    cmt('After the attack env is 1 and the output IS the movement - this shapes the entry,',
+        780, 620, 760)
+    cmt('never the tracking.  ATTACK 0 is the old instant step, exactly.',
+        780, 640, 760)
+
+    # The ramp.  [line] is the control-rate counterpart of [line~]: it ramps on its OWN
+    # clock, 20 ms per step, which is why the envelope is not frame-driven.  A
+    # frame-driven one stalls the moment frames stop - and in MOCK - sliders only they
+    # stop whenever the mouse does, so an attack would freeze half-finished while you
+    # were testing it.
+    cmt('[line] ramps on its own 20 ms clock.  A frame-driven envelope would stall when',
+        780, 680, 760)
+    cmt('frames stop, which in MOCK - sliders only is every time the mouse stops moving.',
+        780, 700, 760)
+    lramp = obj('line 0. 20', 780, 730, 110, 3, 2, ['float', 'bang'])
+
+    # ATTACK waits in the pack's cold inlet; the transition bangs it.  [pack] outputs its
+    # stored list on a bang, so what reaches [line] is "1 <attack>".  The argument is the
+    # default, which is what the cell uses if Live has not restored the control yet.
+    atkpk = obj('pack 1. %g' % Z.ATTACK_MS, 1150, 730, 130, 2, 1, [''])
+    L(IN[9], 0, atkpk, 1)
+    L(atkpk, 0, lramp, 0)
+    # "0 0" and not "0": a bare number hands [line] a destination and lets it use whatever
+    # ramp time it already has - which, right after "1 250", would be 250 ms.  The envelope
+    # would then crawl down from 1 instead of resetting, and the next ramp would start from
+    # ~1 and go nowhere: an attack that exists and does nothing.  Spelling the 0 ms out is
+    # unambiguous whichever way [line] reads a lone number.
+    cmt('"0 0" is a jump to 0.  A bare "0" would reuse the last ramp time and crawl.',
+        1080, 650, 700)
+    zmsg = msg('0 0', 1080, 690, 60)
+    L(zmsg, 0, lramp, 0)                   # back to 0 before every ramp
+
+    # smoothstep: flat at both ends.  A linear ramp has a corner where it starts and
+    # another where it arrives, and both are audible on a filter cutoff.
+    env = obj('expr $f1 * $f1 * (3. - 2. * $f1)', 780, 770, 240, 1, 1, ['float'])
+    L(lramp, 0, env, 0)
+    tenv = obj('t f f', 780, 810, 80, 1, 2, ['float', 'float'])
+    L(env, 0, tenv, 0)
+    envf = obj('f', 950, 810, 60, 2, 1, ['float'])
+    L(tenv, 1, envf, 1)                    # 1st: remember it
+    L(tsrc, 0, envf, 0)                    # every frame re-asks for the current env
+
+    blend = obj('expr $f2 + $f1 * ($f3 - $f2)', 30, 850, 290, 3, 1, ['float'])
+    L(tenv, 0, blend, 0)                   # 2nd: and recompute now (the ramp's own clock)
+    L(envf, 0, blend, 0)                   # the frame's own recompute
+    L(gF, 0, blend, 2)                     # the target: FADER
+    L(gS, 0, blend, 2)                     #             or SWITCH
+
+    # What the knob already had, frozen on every transition - into BOTH held and target.
+    # Setting target too is what makes a FADER hold flat on leaving: nothing downstream
+    # writes a target while the gate is shut, so held == target and the blend is a no-op.
+    # A SWITCH overwrites the target a moment later, because tact fires smap after this.
+    heldf = obj('f', 180, 560, 60, 2, 1, ['float'])
+    thold = obj('t f f', 180, 600, 80, 1, 2, ['float', 'float'])
+    L(heldf, 0, thold, 0)
+    L(thold, 1, blend, 2)                  # 1st: target  = where the knob is
+    L(thold, 0, blend, 1)                  # 2nd: held    = where the knob is
+
+    # Only a real transition restarts the attack.  The nine flags are re-sent whenever
+    # ANY zone changes, so without [change] a cell would re-trigger on its neighbours.
+    cmt('[change]: the nine flags are re-sent whenever any zone changes, so without this',
+        450, 420, 700)
+    cmt("a cell would restart its attack every time a different zone moved.",
+        450, 440, 700)
+    achg = obj('change -1', 450, 470, 90, 1, 1, ['int'])
+    L(tact, 2, achg, 0)
+    tedge = obj('t b b b', 450, 510, 100, 1, 3, ['bang'] * 3)
+    L(achg, 0, tedge, 0)
+    L(tedge, 2, heldf, 0)                  # 1st: freeze where the knob is
+    L(tedge, 1, zmsg, 0)                   # 2nd: env back to 0
+    L(tedge, 0, atkpk, 0)                  # 3rd: ramp it to 1 over ATTACK ms
+
     # ---- out to live.remote~ ------------------------------------------------
     cmt('A short ramp at signal rate: the camera runs at 30 Hz and a raw 30 Hz step is',
-        30, 790, 700)
+        30, 890, 700)
     cmt('audible.  live.remote~ takes a signal - Step Arp, a MIDI effect like this one,',
-        30, 810, 700)
+        30, 910, 700)
     cmt('drives it the same way, which is what proves signals work in a MIDI device.',
-        30, 830, 700)
-    pk = obj('pack 0. 20', 30, 860, 110, 2, 1, [''])
-    L(gF, 0, pk, 0)
-    L(gS, 0, pk, 0)
-    ln = obj('line~', 30, 900, 80, 2, 1, ['signal'])
+        30, 930, 700)
+    tout = obj('t f f', 30, 960, 80, 1, 2, ['float', 'float'])
+    L(blend, 0, tout, 0)
+    L(tout, 1, heldf, 1)                   # 1st: this is what the knob now has
+    pk = obj('pack 0. 20', 30, 1000, 110, 2, 1, [''])
+    L(tout, 0, pk, 0)                      # 2nd: and out it goes
+    ln = obj('line~', 30, 1040, 80, 2, 1, ['signal'])
     L(pk, 0, ln, 0)
-    rem = obj('live.remote~ @normalized 1', 30, 940, 210, 1, 0)
+    rem = obj('live.remote~ @normalized 1', 30, 1080, 210, 1, 0)
     L(ln, 0, rem, 0)
 
     # ---- MAP: acquire the parameter the user clicks -------------------------
@@ -476,8 +600,8 @@ def build_cell(appversion, cellid, span):
     onames = ['mapped name', 'acquired path', 'MAP done', 'value being sent']
     OUT = []
     for x, n in zip(OX, onames):
-        OUT.append(box('outlet', x, 1050, 30, 30, None, 1, 0))
-        cmt(n, x, 1080, 150)
+        OUT.append(box('outlet', x, 1190, 30, 30, None, 1, 0))
+        cmt(n, x, 1220, 150)
     L(rname, 0, OUT[0], 0)
     L(cname, 0, OUT[0], 0)
     L(rpth, 0, OUT[1], 0)
@@ -486,10 +610,11 @@ def build_cell(appversion, cellid, span):
     tdone = obj('t b', 700, 1000, 60, 1, 1, ['bang'])
     L(acc, 0, tdone, 0)
     L(tdone, 0, OUT[2], 0)                 # a successful map releases the button too
-    L(gF, 0, OUT[3], 0)
-    L(gS, 0, OUT[3], 0)
+    # The readout is taken AFTER the envelope: it has to agree with the knob, or the
+    # first thing anyone does with a soft entry is distrust one of the two.
+    L(tout, 0, OUT[3], 0)
 
-    return finish([80, 80, 1700, 1130])
+    return finish([80, 80, 1700, 1280])
 
 
 def build_stepper(appversion):
@@ -539,10 +664,9 @@ def build_stepper(appversion):
     L(ltd, 0, init0, 0)                    # report "not locked" before anything happens
     lpsong = obj('live.path', 430, 190, 90, 1, 3, ['', '', ''])
     L(psong, 0, lpsong, 0)
-    tsong = obj('t b l', 430, 230, 80, 1, 2, ['bang', ''])
-    L(lpsong, 1, tsong, 0)
-    losong = obj('live.object', 430, 310, 110, 2, 2, ['', ''])
-    L(tsong, 1, losong, 1)                 # the id message, intact - see CLAUDE.md
+    # There is deliberately NO live.object on the song.  getcount is a live.path method,
+    # not a live.object one - see the block below.  The first build put one here, asked it
+    # for the scene count, and got nothing back.
 
     # ---- a raise, if armed and not locked ----------------------------------
     cmt('A rising edge only.  mb_zones has already committed the two-hand state over',
@@ -553,21 +677,39 @@ def build_stepper(appversion):
     L(IN[0], 0, ech, 0)
     esel = obj('sel 1', 30, 230, 70, 2, 2, ['bang', ''])
     L(ech, 0, esel, 0)
-    gArm = obj('gate', 30, 270, 80, 2, 1, [''])
+    # THE RAISE ARRIVES IN THE SCHEDULER THREAD.  Both sources of the zone flags deliver
+    # there - [udpreceive 7400] for a real body and [metro 33] for the mock - and Max's
+    # own refpages for live.path AND live.object both say: "The Live API runs in the main
+    # thread in Live, and all messages to and from the API are automatically deferred."
+    # So a raise that asks Live a question and reads the answer in the same event reads
+    # NOTHING: the count reply lands after the walk has already run with uzi's argument.
+    # [deferlow] moves the whole raise onto the main thread, where the API answers in
+    # line - which is the behaviour every test in verify_cells.py models.
+    cmt('deferlow: the raise arrives in the SCHEDULER thread, and Live defers every API',
+        150, 268, 740)
+    cmt('message to its own main thread.  Without this the scene count comes back after',
+        150, 288, 740)
+    cmt('the walk is over, uzi runs with 0, and the stepper does nothing at all, ever.',
+        150, 308, 740)
+    edfl = obj('deferlow', 30, 270, 90, 1, 1, [''])
+    L(esel, 0, edfl, 0)
+    gArm = obj('gate', 30, 310, 80, 2, 1, [''])
     L(IN[1], 0, gArm, 0)                   # blocked for 1000 ms after tracking returns
-    L(esel, 0, gArm, 1)
+    L(edfl, 0, gArm, 1)
     flock = obj('f 0.', 200, 190, 60, 2, 1, ['float'])
     nlock = obj('== 0', 200, 230, 60, 2, 1, ['int'])
     L(flock, 0, nlock, 0)
     cmt('gate 1 1 - OPEN by default.  A bare [gate] starts closed and flock does not',
-        200, 270, 700)
+        930, 268, 700)
     cmt('emit until something locks, so the first raise of the set could never pass.',
-        200, 290, 700)
-    gLock = obj('gate 1 1', 30, 310, 80, 2, 1, [''])
+        930, 288, 700)
+    gLock = obj('gate 1 1', 30, 350, 80, 2, 1, [''])
     L(nlock, 0, gLock, 0)
     L(gArm, 0, gLock, 1)
 
-    req = obj('t b b b', 30, 350, 110, 1, 3, ['bang'] * 3)
+    # Two branches now, not three: the WALK is started by the count reply below, never
+    # from here.  Asking and walking in one event is what could not survive deferral.
+    req = obj('t b b', 30, 390, 110, 1, 2, ['bang'] * 2)
     L(gLock, 0, req, 0)
 
     # ---- ask Live how many scenes there are, every time --------------------
@@ -575,28 +717,86 @@ def build_stepper(appversion):
         600, 350, 700)
     cmt('refresh and nothing can go stale.',
         600, 370, 700)
+    cmt('getcount IS A live.path METHOD, NOT A live.object ONE, and its answer leaves',
+        600, 240, 760)
+    cmt("live.path's RIGHT outlet as \"count <child> <n>\" - so: route count, zl nth 2.",
+        600, 260, 760)
+    cmt('The first build asked live.object for it, which answers nothing at all.  The',
+        600, 280, 760)
+    cmt('count stayed 0, every candidate came out (k + current) % 0 = 0, and the stepper',
+        600, 300, 760)
+    cmt('fired scene 1 on every raise for ever.  Checked against Max\'s own refpages.',
+        600, 320, 760)
     zero = msg('0', 200, 390, 40)
-    L(req, 2, zero, 0)                     # 1st: nothing found yet this raise
+    L(req, 1, zero, 0)                     # 1st: nothing found yet this raise
     ffound = obj('f 0.', 200, 430, 60, 2, 1, ['float'])
     L(zero, 0, ffound, 0)
     nfound = obj('== 0', 200, 470, 60, 2, 1, ['int'])
     L(ffound, 0, nfound, 0)
 
+    # ---- and say so when the walk finds nothing ----------------------------
+    # A raise that finds no playable scene used to do nothing AND say nothing, which is
+    # the failure this whole project keeps re-learning: the device was right and looked
+    # broken.  It is the normal state of a Set whose Session grid is still empty - scenes
+    # are the Session VIEW's rows, and a song built in the Arrangement has none of them.
+    cmt('A raise that finds nothing playable must SAY so.  An empty Session grid is the',
+        200, 500, 720)
+    cmt('commonest reason the stepper looks broken, and silence is what made it look that',
+        200, 520, 720)
+    cmt('way.  uzi\'s right outlet bangs once the whole walk is over.',
+        200, 540, 720)
+    fdone = obj('f 0.', 200, 1040, 60, 2, 1, ['float'])
+    L(zero, 0, fdone, 1)                   # mirrors ffound, without disturbing its gate
+    seldone = obj('sel 0', 200, 1120, 70, 2, 2, ['bang', ''])
+    L(fdone, 0, seldone, 0)
+    mnone = msg('no clips', 200, 1160, 90)
+    L(seldone, 0, mnone, 0)
+    msay = msg('no scene has a clip - nothing to fire. Scenes are Session'
+               ' View rows; a song in the Arrangement has none.', 430, 1160, 620)
+    L(seldone, 0, msay, 0)
+    pr = obj('print mb_stepper', 430, 1200, 150, 1, 0)
+    L(msay, 0, pr, 0)
+
     gcnt = msg('getcount scenes', 430, 390, 150)
-    L(req, 1, gcnt, 0)                     # 2nd: how many scenes?
-    L(gcnt, 0, losong, 0)
-    rcnt = obj('route getcount', 430, 430, 130, 2, 2, ['', ''])
-    L(losong, 0, rcnt, 0)
+    L(req, 0, gcnt, 0)                     # 2nd: how many scenes?  The REPLY walks.
+    L(gcnt, 0, lpsong, 0)                  # live.path, NOT live.object
+    rcnt = obj('route count', 430, 430, 130, 2, 2, ['', ''])
+    L(lpsong, 2, rcnt, 0)                  # outlet 2 carries getcount/getpath replies
     ncnt = obj('zl nth 2', 430, 470, 90, 2, 2, ['', ''])
     L(rcnt, 0, ncnt, 0)
-    tcnt = obj('t i i', 430, 510, 80, 1, 2, ['int', 'int'])
+    # [t b i i] and not [t i i]: the walk is started HERE, by Live's answer, instead of
+    # from a third branch of [req] above.  The old wiring asked for the count and banged
+    # the walk in the same event, so it depended on live.path replying synchronously -
+    # which it does not when the raise comes from the scheduler thread.  Now the count is
+    # stored, uzi's length is set, and only then does the walk run: right to left.
+    tcnt = obj('t b b i i', 430, 510, 120, 1, 4, ['bang', 'bang', 'int', 'int'])
     L(ncnt, 0, tcnt, 0)
     fcnt = obj('f 0.', 600, 550, 60, 2, 1, ['float'])
-    L(tcnt, 1, fcnt, 1)                    # remember it for the modulo
+    L(tcnt, 3, fcnt, 1)                    # 1st: remember it for the modulo
 
-    uzi = obj('uzi 1', 30, 590, 80, 2, 3, ['bang', 'int', 'bang'])
-    L(tcnt, 0, uzi, 1)                     # how many candidates to try
-    L(req, 0, uzi, 0)                      # 3rd: walk forward from the current scene
+    # EVERY REFUSAL NEEDS A VOICE, and this one had none.  The scene readout is built
+    # from [sprintf %ld / %ld] in the window, whose HOT inlet is the current scene - and
+    # the current scene only arrives when something actually fires.  So a raise that
+    # answered nothing printed nothing, and "it does not even say how many scenes there
+    # are" was the only symptom available.  The count now says itself, in two places:
+    cntsay = obj('prepend count', 660, 470, 110, 2, 1, [''])
+    L(tcnt, 3, cntsay, 0)                  # -> the Max console, on every single raise
+
+    # [uzi 0] and not [uzi 1]: the argument is what runs if Live's count never arrives,
+    # and ZERO iterations means nothing fires at all.  With 1 it tried a candidate anyway,
+    # against a count of 0 - which is how a missing count turned into "fires scene 1 every
+    # time" instead of into "does nothing", and a stepper that does nothing is a bug you
+    # can see.  Choose the visible failure.
+    cmt('[uzi 0]: with no count from Live, try NO candidates.  A silent wrong answer is',
+        150, 560, 700)
+    cmt('worse than an obvious dead stepper.',
+        150, 580, 700)
+    uzi = obj('uzi 0', 30, 590, 80, 2, 3, ['bang', 'int', 'bang'])
+    L(tcnt, 2, uzi, 1)                     # 2nd: how many candidates to try
+    # 3rd: refresh the readout NOW, so the count shows whether or not anything fires
+    # 4th: and only then walk forward from the current scene
+    L(tcnt, 0, uzi, 0)
+    # outlet 2 bangs once, after every candidate has been tried
 
     # ---- candidate = (current + k) mod count -------------------------------
     fcur = obj('f -1.', 780, 550, 70, 2, 1, ['float'])
@@ -605,8 +805,18 @@ def build_stepper(appversion):
     cmt('[f] holds silently - bang current and count into the cold inlets first.',
         300, 600, 700)
     tk = obj('t i b', 30, 600, 80, 1, 2, ['int', 'bang'])
-    L(uzi, 1, tk, 0)
-    cand = obj('expr ($i1 + $i2) % $i3', 30, 640, 260, 3, 1, ['int'])
+    # uzi's OUTLET 2 is the index and OUTLET 1 is the carry - the build had them the
+    # other way round, which is why the walk ran exactly once, off the done-bang, with
+    # [t i] turning that bang into 0: candidate (0 + -1) % 8 = -1 in C semantics, so
+    # "path live_set scenes -1" -> id 0 and the whole walk died on its only attempt.
+    # Max's refpage: outlet 1 "Done banging bang (carry)", outlet 2 "Current Index", and
+    # the second argument "sets the base value for the RIGHT OUTLET COUNT", base 1.
+    L(uzi, 2, tk, 0)
+    # The zero guard is the CLAUDE.md idiom - Max expr has no ternary - and it is here
+    # because % 0 does not raise in Max, it quietly returns 0.  That is what made a missing
+    # scene count look like "always the first scene" rather than like an error.
+    cand = obj('expr ($i1 + $i2) % ((($i3 > 0) * $i3) + ($i3 <= 0))',
+               30, 640, 380, 3, 1, ['int'])
     L(tk, 1, fcur, 0)                      # 1st: emit them
     L(tk, 1, fcnt, 0)
     L(fcur, 0, cand, 1)
@@ -622,12 +832,36 @@ def build_stepper(appversion):
         600, 680, 700)
     cmt('them is what lets the stepper discover the length of the piece by itself.',
         600, 700, 700)
-    spath = obj('sprintf path live_set scenes %ld', 30, 720, 250, 1, 1, [''])
+    # [prepend] and not [sprintf]: this is the idiom six shipped Ableton devices use to
+    # build a LOM path (Vector Map, Vector Grain, Vector Delay, Vector FM, Emit, Bouncy
+    # Notes - all of the 142 stock devices scanned, NONE uses sprintf for a path).  It
+    # also removes the %ld question entirely: no format string, no numeric type to get
+    # wrong, the index goes in as the atom it already is.
+    spath = obj('prepend path live_set scenes', 30, 720, 250, 2, 1, [''])
     L(tcand, 0, spath, 0)
     lpsc = obj('live.path', 30, 760, 90, 1, 3, ['', '', ''])
     L(spath, 0, lpsc, 0)
+    # "Sends id 0 if there is no object at the current path" - live.path's own refpage.
+    # A live.object set to id 0 then answers nothing, so the walk would stop here in
+    # total silence.  That is the one remaining way this can look identical to a dead
+    # device, so it gets a voice too.
+    rid = obj('route id', 560, 760, 90, 2, 2, ['', ''])
+    L(lpsc, 0, rid, 0)
+    seldead = obj('sel 0', 560, 800, 70, 2, 2, ['bang', ''])
+    L(rid, 0, seldead, 0)
+    deadsay = msg('a scene path resolved to id 0 - no object there.',
+                  560, 840, 420)
+    L(seldead, 0, deadsay, 0)
+    # OUTLET 0, not outlet 1.  Outlet 0 answers a path/goto message every time; outlet 1
+    # only fires WHEN THE ID CHANGES, so asking for the same scene twice in a row would
+    # get one answer and the second query would hang silently.  With one playable scene in
+    # the Set that is every raise after the first.
+    cmt('live.path outlet 0 answers every path message.  Outlet 1 only fires when the id',
+        150, 760, 720)
+    cmt('CHANGES - which for a request/response is a query that sometimes never answers.',
+        150, 780, 720)
     tsc = obj('t b l', 30, 800, 80, 1, 2, ['bang', ''])
-    L(lpsc, 1, tsc, 0)
+    L(lpsc, 0, tsc, 0)
     losc = obj('live.object', 30, 880, 110, 2, 2, ['', ''])
     L(tsc, 1, losc, 1)
     gempty = msg('get is_empty', 30, 840, 120)
@@ -643,9 +877,10 @@ def build_stepper(appversion):
     L(selem, 0, gfirst, 1)
     tfirst = obj('t b b', 30, 1040, 80, 1, 2, ['bang', 'bang'])
     L(gfirst, 0, tfirst, 0)
-    one = msg('1', 200, 1040, 40)
+    one = msg('1', 200, 1000, 40)
     L(tfirst, 1, one, 0)                   # 1st: close the gate behind us
     L(one, 0, ffound, 0)
+    L(one, 0, fdone, 1)                    #      and remember it for the report
     L(tfirst, 0, fcand, 0)                 # 2nd: and that is the scene to fire
 
     # ---- fire it ------------------------------------------------------------
@@ -654,12 +889,12 @@ def build_stepper(appversion):
     tfire = obj('t i i i', 30, 1090, 110, 1, 3, ['int', 'int', 'int'])
     L(fcand, 0, tfire, 0)
     L(tfire, 2, fcur, 1)                   # 1st: this is the current scene now
-    fpath = obj('sprintf path live_set scenes %ld', 30, 1130, 250, 1, 1, [''])
+    fpath = obj('prepend path live_set scenes', 30, 1130, 250, 2, 1, [''])
     L(tfire, 1, fpath, 0)                  # 2nd: resolve it and arm the observer
     lpf = obj('live.path', 30, 1170, 90, 1, 3, ['', '', ''])
     L(fpath, 0, lpf, 0)
     tf = obj('t b l l', 30, 1210, 100, 1, 3, ['bang', '', ''])
-    L(lpf, 1, tf, 0)
+    L(lpf, 0, tf, 0)                       # outlet 0: always answers - see above
     lof = obj('live.object', 30, 1330, 110, 2, 2, ['', ''])
     L(tf, 2, lof, 1)
     obs = obj('live.observer', 300, 1330, 120, 2, 2, ['', ''])
@@ -668,9 +903,40 @@ def build_stepper(appversion):
     L(tf, 0, ptrig, 0)
     L(ptrig, 0, obs, 0)
 
+    # Lock FIRST, then fire - and force that order rather than trusting fan-out.
+    # If the fire goes first, Live can report is_triggered 1 AND 0 before the lock is set
+    # (Global Quantization None, or a raise that lands on the downbeat), both reports are
+    # dropped because the unlock gate is still shut, and the stepper then sits locked until
+    # the 8 s failsafe - once per raise.  Setting the lock first means the gate is open for
+    # whatever Live says next, however fast it says it.
+    cmt('Lock, THEN fire.  The other order loses the unlock report when a scene starts',
+        150, 1240, 720)
+    cmt('immediately, and the failsafe ends up running the lockout.',
+        150, 1260, 720)
+    tgo = obj('t b b b', 150, 1290, 100, 1, 3, ['bang', 'bang', 'bang'])
+    L(tfire, 0, tgo, 0)                    # 3rd: lock, fire, then check up on it
     cfire = msg('call fire', 30, 1290, 100)
-    L(tfire, 0, cfire, 0)                  # 3rd: fire
+    L(tgo, 1, cfire, 0)                    # 2nd of the three: fire
     L(cfire, 0, lof, 0)
+
+    # LIVE.OBSERVER ONLY REPORTS A CHANGE, and a scene that starts without ever blinking
+    # never changes is_triggered: it was 0 before the fire and it is 0 after.  So the
+    # notification this lockout waits for is never sent at all, the 8 s failsafe ends up
+    # running the lockout, and the device "advances once and then stops working".  That
+    # is the case whenever the transport is STOPPED, and at Global Quantization None.
+    # The fix is to ASK as well as listen.  live.observer's own bang method: "Sends
+    # current value of selected property of current object to the left outlet."  120 ms
+    # after the fire a scene that is still queued answers 1 and the lockout stands; one
+    # that has already started answers 0, which is the same release the notification
+    # would have given.  The failsafe goes back to being a failsafe.
+    cmt('A scene that starts WITHOUT blinking never changes is_triggered, so no',
+        660, 1240, 700)
+    cmt('notification is ever sent.  Ask, do not only listen.',
+        660, 1260, 700)
+    recheck = obj('del 120', 660, 1290, 80, 2, 1, ['bang'])
+    L(tgo, 0, recheck, 0)                  # 3rd of the three: after the fire
+    L(recheck, 0, obs, 0)                  # a bang makes the observer re-read it
+    L(uzi, 1, fdone, 0)                    # the walk is over - 0 found, or 1
 
     # ---- and lock until Live says it has started ---------------------------
     cmt('The observer reports is_triggered: 1 while the scene is queued and blinking, 0',
@@ -682,7 +948,7 @@ def build_stepper(appversion):
     cmt('report at the moment it is armed cannot unlock it straight away.',
         600, 1440, 720)
     lk = obj('t b b', 30, 1380, 80, 1, 2, ['bang', 'bang'])
-    L(cfire, 0, lk, 0)
+    L(tgo, 2, lk, 0)                       # 1st of the three: lock and arm the failsafe
     lock1 = msg('1', 30, 1420, 40)
     L(lk, 1, lock1, 0)
     L(lock1, 0, flock, 0)
@@ -710,20 +976,54 @@ def build_stepper(appversion):
     fs = obj('del 8000', 30, 1460, 90, 2, 1, ['bang'])
     L(lk, 0, fs, 0)
     L(fs, 0, lock0, 0)
+
+    # The lockout says what it is doing, and crucially WHO released it.  "advanced once
+    # and then stopped" is indistinguishable from a dozen other faults without this, and
+    # the one line that separates them is whether Live released the lock or the timer did.
+    saylock = msg('locked', 150, 1420, 80)
+    L(lock1, 0, saylock, 0)
+    L(saylock, 0, pr, 0)
+    saytrig = obj('prepend is_triggered', 430, 1380, 160, 2, 1, [''])
+    L(tobs, 0, saytrig, 0)                 # every report Live sends, gate or no gate
+    L(saytrig, 0, pr, 0)
+    sayunlock = msg('unlocked by Live', 430, 1460, 150)
+    L(selstart, 0, sayunlock, 0)
+    L(sayunlock, 0, pr, 0)
+    sayfs = msg('unlocked by the 8 s FAILSAFE - Live never reported the scene starting,'
+                ' so the guard ran as a timer', 430, 1540, 620)
+    L(fs, 0, sayfs, 0)
+    L(sayfs, 0, pr, 0)
     stop = msg('stop', 430, 1500, 60)
     L(selstart, 0, stop, 0)
     L(stop, 0, fs, 0)
 
     # ---- outlets -------------------------------------------------------------
     OUT = []
-    for x, n in zip([30, 200, 370], ['current scene, 1-based', 'scene count', 'locked']):
+    for x, n in zip([30, 200, 370, 540],
+                    ['current scene, 1-based', 'scene count', 'locked',
+                     'nothing playable']):
         OUT.append(box('outlet', x, 1600, 30, 30, None, 1, 0))
         cmt(n, x, 1630, 200)
     disp = obj('expr $i1 + 1', 30, 1560, 120, 1, 1, ['int'])
     L(tfire, 2, disp, 0)
     L(disp, 0, OUT[0], 0)
-    L(tcnt, 1, OUT[1], 0)
+    # The 1-based current scene, held so the readout can be rebuilt WITHOUT a fire.
+    # [f] starts at 0, so before anything has ever fired the readout honestly reads
+    # "0 / 8" - no scene yet, eight of them found - instead of reading nothing at all.
+    fdisp = obj('i 0', 200, 1560, 60, 2, 1, ['int'])
+    L(disp, 0, fdisp, 1)                   # remember it, every time one fires
+    L(tcnt, 1, fdisp, 0)                   # 3rd branch of the count: re-emit it
+    L(fdisp, 0, OUT[0], 0)
+    L(tcnt, 3, OUT[1], 0)                  # the count reaches the readout cold inlet 1st
+    # and the console gets the same two facts, which is what makes a silent raise
+    # diagnosable at all: a "count" line with no "fired" line localises it exactly.
+    L(cntsay, 0, pr, 0)
+    L(deadsay, 0, pr, 0)
+    firesay = obj('prepend fired', 200, 1600, 110, 2, 1, [''])
+    L(disp, 0, firesay, 0)
+    L(firesay, 0, pr, 0)
     L(flock, 0, OUT[2], 0)
+    L(mnone, 0, OUT[3], 0)                 # -> the window's scene readout says "no clips"
 
     return finish([80, 80, 1700, 1700])
 
@@ -838,6 +1138,31 @@ def build_panel(appversion):
     PANEL_OUT = [box('outlet', 30, 1760, 30, 30, None, 1, 0)]
     cmt('last mapped parameter name -> the device panel', 70, 1765, 400)
 
+    # ---- ATTACK: one control, all eight cells -------------------------------
+    # The only new control the zone layer has gained since it was built, and the only one
+    # that is global rather than per cell.  An attack time is a feel parameter: no amount
+    # of arithmetic settles it, it gets dialled in while dancing - and baking it in would
+    # mean a rebuild, a re-drag into Live and a restart per attempt.  One Live parameter
+    # for all eight cells, because a per-cell one would be eight more and the window has
+    # no room for them.
+    cmt('ATTACK, global to all eight cells.  0 ms is the old instant entry.',
+        780, 1480, 700)
+    atk = box('live.numbox', 780, 1510, 60, 15, None, 1, 2, ['', 'float'], extra=OD([
+        ('parameter_enable', 1), ('presentation', 1),
+        ('presentation_rect', [70.0, 286.0, 46.0, 15.0]),
+        ('saved_attribute_attributes', live_param(
+            'Attack', 'Atk', 0, parameter_mmin=0.0, parameter_mmax=Z.ATTACK_MAX,
+            parameter_initial_enable=1, parameter_initial=[Z.ATTACK_MS],
+            parameter_modmode=0)),
+        ('varname', 'mbz_attack')]))
+    box('comment', 780, 1540, 120, 20, 'ATTACK', 1, 0, extra=OD([
+        ('presentation', 1), ('presentation_rect', [4.0, 286.0, 64.0, 15.0]),
+        ('fontsize', 9.0), ('varname', 'mbzattacklab')]))
+    box('comment', 920, 1540, 300, 20, 'ms - the glide into a zone, and out of a SWITCH',
+        1, 0, extra=OD([
+            ('presentation', 1), ('presentation_rect', [120.0, 286.0, 270.0, 15.0]),
+            ('fontsize', 9.0), ('varname', 'mbzattacknote')]))
+
     # ---- one block per cell -------------------------------------------------
     ybase = 560
     for n, (key, flag, zone, hand, col, dsrc) in enumerate(BUILD):
@@ -938,7 +1263,7 @@ def build_panel(appversion):
             ('presentation_rect', [float(px + 116), float(py + 17), 34.0, 15.0]),
             ('fontsize', 9.0), ('varname', '%s_val' % key)]))
 
-        cell = obj('p mb_cell', ox, oy + 100, 120, 9, 4, [''] * 4)
+        cell = obj('p mb_cell', ox, oy + 100, 120, 10, 4, [''] * 4)
         cell_patch_span.append(SPANS[zone])
 
         L(COL[col], 0, cell, 0)            # source list   (hot, once per frame)
@@ -957,6 +1282,7 @@ def build_panel(appversion):
         L(pat, 0, rgate, 1)
         L(rgate, 0, cell, 7)
         L(clrb, 0, cell, 8)
+        L(atk, 0, cell, 9)                 # ATTACK ms, the same value to every cell
 
         # outputs
         nset = obj('prepend set', ox + 80, oy + 140, 110, 1, 1, [''])
@@ -969,8 +1295,15 @@ def build_panel(appversion):
         L(cell, 2, moff, 0)
         L(moff, 0, mapb, 0)                # release the MAP button
         L(uf, fi, lamp, 0)                 # the zone flag lights the lamp directly
+        # [change] on the READOUT only.  Since the attack envelope the cell emits on every
+        # frame whether or not anything moved - 8 cells x 30 Hz - and without this every
+        # comment in the window redraws 240 times a second to show the same number.  Safe
+        # here and nowhere else: this value only drives a display.  Nothing is hot on it,
+        # which is the distinction CLAUDE.md records from the mb_zones [change] bug.
+        vchg = obj('change -999.', ox + 460, oy + 140, 110, 1, 1, ['float'])
+        L(cell, 3, vchg, 0)
         vfmt = obj('sprintf %.2f', ox + 460, oy + 170, 110, 1, 1, [''])
-        L(cell, 3, vfmt, 0)
+        L(vchg, 0, vfmt, 0)
         vset = obj('prepend set', ox + 460, oy + 200, 110, 1, 1, [''])
         L(vfmt, 0, vset, 0)
         L(vset, 0, vshow, 0)
@@ -1004,7 +1337,7 @@ def build_panel(appversion):
         ('presentation_rect', [float(spx + 76), float(spy + 34), 74.0, 15.0]),
         ('fontsize', 9.0), ('varname', 'mbz_lamplab')]))
 
-    stepper = obj('p mb_stepper', 30, 1600, 130, 2, 3, ['', '', ''])
+    stepper = obj('p mb_stepper', 30, 1600, 130, 2, 4, [''] * 4)
     L(uf, FLAGS.index('abvB'), stepper, 0)
     L(uf, FLAGS.index('abvB'), fire_lamp, 0)
     L(IN[3], 0, stepper, 1)                # fire-armed: the 1000 ms block after tracking
@@ -1018,6 +1351,12 @@ def build_panel(appversion):
     sset = obj('prepend set', 30, 1700, 110, 1, 1, [''])
     L(sfmt, 0, sset, 0)
     L(sset, 0, scene_disp, 0)
+    # "no clips" instead of a scene number, when a raise walked every scene and found
+    # none with a clip in it.  The stepper was right to fire nothing; the window saying
+    # nothing is what made it look broken.
+    snone = obj('prepend set', 200, 1700, 110, 1, 1, [''])
+    L(stepper, 3, snone, 0)
+    L(snone, 0, scene_disp, 0)
 
     # ---- a mock body, right here in the window ------------------------------
     # The real mock sliders live at the root and are not in the device's presentation,
@@ -1027,11 +1366,12 @@ def build_panel(appversion):
     cmt('mock body - drives the same joints the Kinect would', 30, 1600, 500)
     MOCKS = [('LX', 'left hand X', 0, 0, -1.0, 1.0), ('LY', 'left hand Y', 0, 1, -1.0, 1.5),
              ('RX', 'right hand X', 1, 0, -1.0, 1.0), ('RY', 'right hand Y', 1, 1, -1.0, 1.5)]
-    # These have to be LONG.  A side zone only begins at 1.15 body lengths and an arm
-    # reaches about 1.79, so the whole 0-100% of the fader lives in the outer 17% of
-    # the slider's travel.  Drawn 50 px wide that is eight pixels for the entire knob,
-    # which is unusable - it snaps between the extremes and nothing in between.  Full
-    # width gives about 70 px for the same span.
+    # These have to be LONG.  These sliders are in METRES while the zones are in body
+    # lengths, so at a ~0.5 m body length the whole 0-100% of a fader lives in roughly 15%
+    # of a slider's -1..1 m travel (SIDE_ENTER to the top of the X span, in
+    # zone_constants.py).  Drawn 50 px wide that is eight pixels for the entire knob, which
+    # is unusable - it snaps between the extremes and nothing in between.  Full width gives
+    # about 60 px for the same span.
     box('comment', 30, 1760, 120, 20, 'mock body', 1, 0, extra=OD([
         ('presentation', 1), ('presentation_rect', [4.0, 192.0, 120.0, 15.0]),
         ('fontsize', 9.0), ('varname', 'mbzmocklabel')]))
@@ -1063,7 +1403,9 @@ def build_panel(appversion):
             ('fontsize', 9.0), ('varname', 'mbzlab_col%d' % c)]))
 
     # [left, top, width, height] - what the floating window actually opens at.
-    return finish([200, 200, 546, 340], presentation=True), cell_patch_span
+    # 340 -> 368: the ATTACK row sits below the mock sliders, and a window that clips its
+    # own last row is a bug report waiting to happen.
+    return finish([200, 200, 546, 368], presentation=True), cell_patch_span
 
 
 

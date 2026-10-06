@@ -1,4 +1,16 @@
-import json,copy,collections,io
+# NOT IDEMPOTENT, AND IT CANNOT BE RE-RUN ON THE CURRENT PATCH.  This script INSERTED
+# mb_body and mb_zones once, in August: it appends rather than replaces, addresses root
+# objects by hard-coded id, and build_cells.py in turn addresses mb_zones by the id this
+# run gave it.  Running it again produces a SECOND copy of both subpatchers with the cells
+# still wired to the first.
+#
+# It is kept because it is the construction record of both subpatchers, and because a
+# rebuild from a clean HEAD would start here.  To change a zone NUMBER, edit
+# zone_constants.py and run tune_zones.py - which rewrites them in place, in the patch that
+# actually exists.  Both files read the same constants, so the two can no longer disagree.
+import json,copy,collections,io,os,sys
+sys.path.insert(0,os.path.dirname(os.path.abspath(__file__)))
+import zone_constants as Z
 P='synth/controller/MoveBeatController.maxpat'
 doc=json.load(open(P),object_pairs_hook=collections.OrderedDict)
 root=doc['patcher']
@@ -80,27 +92,32 @@ BODYSUB=finish([80,80,1700,950])
 
 # ============================== mb_zones ==============================
 box,obj,cmt,msg,L,finish=newsub()
-AE,AX,SE,SX,COMMIT,GRACE=0.15,0.00,1.15,1.00,200,1000
+# From zone_constants.py - the one place these live.  COMMIT is per zone now: 200 ms in
+# ABOVE, where a wrong hand count advances the song, and 60 ms in the sides, where it only
+# moves a knob and 200 ms was felt as latency by a performer.
+AE,AX,SE,SX,GRACE=Z.ABOVE_ENTER,Z.ABOVE_LEAVE,Z.SIDE_ENTER,Z.SIDE_LEAVE,Z.GRACE
 for i,t in enumerate([
  'mb_zones - WHERE THE HANDS ARE.  Consumes the mb_body list; emits which of the nine',
  '(zone x hand-state) combinations is active. No Live objects here - this whole subpatch',
  'is testable on the Mac against the mock body, with no camera and no Ableton.']): cmt(t,20,8+i*20,700)
-cmt(f'THRESHOLDS (body lengths):  ABOVE enter head+{AE} leave head+{AX}   SIDE enter {SE} leave {SX}',20,76,700)
-cmt(f'TIMING: hand-count commit {COMMIT} ms   fire re-arm after tracking returns {GRACE} ms',20,96,700)
+cmt('THRESHOLDS (body lengths):  ABOVE enter head+%s leave head+%s   SIDE enter %s leave %s'
+    %(Z.fmt(AE),Z.fmt(AX),Z.fmt(SE),Z.fmt(SX)),20,76,700)
+cmt('TIMING: hand-count commit %d ms ABOVE / %d ms the sides   fire re-arm after tracking returns %d ms'
+    %(Z.COMMIT_ABOVE,Z.COMMIT_SIDE,GRACE),20,96,700)
 cmt('The head rule: a hand above the head is in ABOVE, whatever its X. Sides are masked by it.',20,116,700)
 inl=box('inlet',30,160,30,30,None,0,1); cmt('mb_body list',70,165,200)
 up=obj('unpack 0 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.',30,210,430,1,11,['int']+['float']*10); L(inl,0,up,0)
 cmt('fires right-to-left: valid, scale, head.y ... then the hands. Order is load-bearing.',480,212,560)
 above={}
 for h,(oy,x) in (('L',(2,30)),('R',(5,500))):
-    e=obj(f'expr $f1 > $f2 + {AE} - $f3 * {AE-AX}',x,280,290,3,1); L(up,oy,e,0); L(up,8,e,1)
+    e=obj('expr $f1 > $f2 + %s - $f3 * %s'%(Z.fmt(AE),Z.fmt(AE-AX)),x,280,290,3,1); L(up,oy,e,0); L(up,8,e,1)
     t=obj('t i i',x,315,80,1,2,['int','int']); L(e,0,t,0); L(t,1,e,2); above[h]=t
     cmt(f'hand {h} above the head',x+300,282,260)
 side={}
 for h,(ox,x) in (('L',(1,30)),('R',(4,500))):
     seq=obj('t f f',x,400,80,1,2,['float','float']); L(up,ox,seq,0)
     for zi,(zn,sgn,so) in enumerate((('right',+1,1),('left',-1,0))):
-        e=obj(f'expr ($f1 * {sgn} > {SE} - $f3 * {SE-SX}) * (1 - $f2)',x+zi*300,440,290,3,1)
+        e=obj('expr ($f1 * %d > %s - $f3 * %s) * (1 - $f2)'%(sgn,Z.fmt(SE),Z.fmt(SE-SX)),x+zi*300,440,290,3,1)
         L(seq,so,e,0); L(above[h],0,e,1)
         t=obj('t i i',x+zi*300,475,80,1,2,['int','int']); L(e,0,t,0); L(t,1,e,2)
         side[(zn,h)]=t; cmt(f'hand {h} in the {zn} zone',x+zi*300+90,477,200)
@@ -113,9 +130,9 @@ for zi,(zn,gL,gR) in enumerate((('above',above['L'],above['R']),
     c1=obj('change',30,y+30,80); L(st,0,c1,0)
     tb2=obj('t b i',30,y+60,80,1,2,['bang','int']); L(c1,0,tb2,0)
     hold=obj('int',150,y+60,60,2,1); L(tb2,1,hold,1)
-    dl=obj(f'del {COMMIT}',30,y+90,80,2,1); L(tb2,0,dl,0); L(dl,0,hold,0)
+    dl=obj('del %d'%Z.commit(zn),30,y+90,80,2,1); L(tb2,0,dl,0); L(dl,0,hold,0)
     c2=obj('change',230,y+90,80); L(hold,0,c2,0); resolved[zn]=c2
-    cmt(f'{zn.upper()}: 0 none, 1 left, 2 right, 3 both - committed after {COMMIT} ms so that',330,y+62,560)
+    cmt('%s: 0 none, 1 left, 2 right, 3 both - committed after %d ms so that'%(zn.upper(),Z.commit(zn)),330,y+62,560)
     cmt('raising both hands never fires the one-hand cell on the way up.',330,y+82,560)
 flags=[]
 for zi,zn in enumerate(('above','left','right')):
