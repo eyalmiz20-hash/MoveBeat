@@ -14,6 +14,195 @@ five screenshots and the three Chapter 4 entries.**
 
 ---
 
+## ▶ 2026-10-06 (evening) — THE JITTER AND THE CLICKS — written up for the chapter
+
+**Status: the user ran it in Live and reports everything working.** Two faults were found and
+fixed in one session, on two different machines, and the session is worth a chapter of its own
+because **almost all of the work was ruling things out, and the thing that was finally wrong was
+invisible to a test suite that printed 99/99.** The headings below are a chapter skeleton; the
+detail for each lives in the sections further down this file and is cross-referenced.
+
+### 1. What was reported
+
+Two complaints, a few hours apart, and treating them as one problem would have been a mistake:
+
+| Reported | What it turned out to be |
+|---|---|
+| "a bit of jitter in the packet transfer which ruins the flow of the composition" | **not the packet transfer at all** — a ramp inside the mapper that was shorter than the gap between camera frames |
+| "audio clicks and bops" | the capture app changing which *body* it was following, mid-performance |
+
+**Jitter and a click are different faults.** A click is a discontinuity; jitter is an uneven rate.
+Keeping them apart is what made both findable. The performer's two sentences were the only
+symptom data available, and each pointed at a different machine.
+
+### 2. The method: measure the artefact, and say what the measurement does NOT settle
+
+Three Sonnet research agents ran in parallel — Max/M4L timing from the installed refpages, a
+graph-walk of the controller's per-frame hot path, and a measurement protocol — while the live
+system was decoded directly: Live's own `Log.txt`, the `.als`, Live's `Preferences.cfg`, and the
+4 MB `.maxpat` JSON. **Not one conclusion below came from reasoning about what the code should do.**
+
+Two of the three agents had to be overruled, which is itself worth writing down:
+
+- One proposed `udpreceive @defer 1` as "the low-risk fix for jitter", quoting the refpage
+  correctly — *"especially in Max for Live, this can reduce the chances of audio glitches and
+  dropouts."* **That sentence is about glitches, not about timing**, and deferring moves the
+  mapping onto the low-priority queue, which is throttled and contends with GUI redraw. It could
+  plausibly make jitter *worse*. **Not applied.** Still unapplied, and still a legitimate A/B.
+- Another proposed toggling Live's "Scheduler in Audio Interrupt" and re-measuring. **That
+  experiment cannot be run**: in M4L, Overdrive and SIAI are always on, the signal vector is
+  hardcoded at 64, and none of it is changeable (Cycling '74 staff, confirmed three ways). The
+  first agent had already established this. **An agent's report is evidence, not a verdict** —
+  the same rule this file already states about reference implementations.
+
+### 3. What measurement RULED OUT — which was nearly everything
+
+This is the most useful table in the session, because every row was a plausible theory that cost
+nothing to kill:
+
+| Suspected | Verdict | The measurement |
+|---|---|---|
+| Too much per-frame work in the mapper | **exonerated** | ~386 object evaluations per frame ≈ 10–12k/s. Max's own docs put the risky regime 2–3 orders of magnitude higher |
+| Live dropping or starving events | **exonerated** | Live's `Log.txt`, every run that day: **zero failures** in every bucket, including `Max Remote Automation Events` 0/5041 |
+| Audio buffer too large | **exonerated** | 128 samples / 44.1 kHz, 6.05 ms round trip; and M4L's vector is fixed at 64 (~1.45 ms) regardless — far finer than a 33 ms frame |
+| Max's scheduler settings | **not tunable** | there is no preference to fix inside a device |
+| Two devices fighting over a port | **exonerated for this Set** | the `.als` has exactly one controller and one synth |
+| CPU contention from a heavy Set | **exonerated** | Vital and UADx Ravel Grand Piano are both loaded, and Live still recorded no failures |
+
+**The chapter's point: "make it more efficient" was the wrong request, and the measurements said
+so before any code changed.** The mapper was never short of CPU. The fault was in *timing*.
+
+### 4. A wrong turn, recorded — the obvious optimisation was worse
+
+The synth's 24 parameters are real Live device parameters, so the obvious move was to delete the
+localhost UDP hop and drive them from the controller with `live.remote~` — the mechanism the eight
+zone cells already use. **It was proposed, then withdrawn after reading the patch**, for two
+reasons that only the artefact could give:
+
+- `[p mb_ctrl_in]` feeds `[poly~ mb_voice 8]` **directly**, bypassing the 24 `live.numbox`
+  parameters entirely. The "optimisation" would have *added* a Live-parameter hop where the value
+  already goes straight to the DSP.
+- `live.remote~` **seizes** a parameter — *"a parameter is disabled in Live while it is controlled
+  by a live.remote~."* All six mapped knobs would have frozen on the synth panel.
+
+**The faster-looking path was the slower one, and it cost a feature.** Worth a paragraph: an
+architecture diagram tells you what connects to what, not which way the data actually goes.
+
+### 5. Fault one — the jitter was a flat spot, and it was one number
+
+A cell sends `[pack 0. 20]` → `[line~]` → `[live.remote~]`: every frame hands `line~` a target
+**and a time to get there in**. The camera delivers a frame every **31–38 ms** (26–32 Hz). The ramp
+was **20 ms**, so it *arrived* and then **sat flat for 11–18 ms**.
+
+So the output was a staircase with a ramped riser and **a flat tread whose length wobbled by about
+a third, in step with the camera**. At constant arm speed the parameter still moved unevenly. That
+is the whole fault. Fixed by `OUTPUT_RAMP_MS = 40.0` in `zone_constants.py` — just past the 38 ms
+worst case, so consecutive ramps overlap and no flat spot remains.
+
+**A side effect worth a sentence in the chapter: overlapping ramps CONVERGE rather than land.**
+Each frame re-aims the ramp before it finishes, so the output approaches the target geometrically
+instead of hitting it — which is exactly what removes the steps, and which forced two existing
+tests to be rewritten to assert convergence *and* exact landing once frames stop.
+
+### 6. Fault two — the suite could not see the thing that was wrong (the FIFTH instance)
+
+`verify_cells.py` modelled `[line~]` as a **pass-through**: it took the ramp target and dropped the
+ramp *time*. Consequences, none of which appeared as a failing test:
+
+- the suite could never see the output ramp, so **"99/99" was never evidence about smoothness** —
+  the property most of the zone layer exists to provide
+- the ramp length was **unguarded at any value**
+- it **certified a false claim** — "ATTACK 0 restores the previous instant behaviour exactly" was
+  an artefact of the pass-through; the device never did it
+
+**This is the fifth instance of the same failure mode in this project and the first in the model of
+MAX rather than of Live**, which retires the fourth instance's comfortable conclusion. The rule now
+reads: *the weak point is every boundary the model simplifies in order to be a model, and a comment
+admitting the simplification is not a mitigation.* Full write-up under "A FIFTH TIME" below.
+
+**The order of work is the lesson: the measurement was fixed first, before the device.** Only then
+could the fix be demonstrated at all.
+
+### 7. Fault three — the clicks: losing the body was guarded, swapping it was not
+
+`Program.cs` took the first tracked body in the array and broke out of the loop. Kinect v2 fills
+that array by an index that is **neither stable nor meaningfully ordered**, so the moment anything
+else tracks — a reflection, someone walking behind the performer — the stream can change body
+between frames.
+
+**The asymmetry is the finding, and it generalises past this project:** losing the body was already
+carefully guarded (`/mb/tracked 0`, faders hold, switches release), while *swapping* the body was
+not guarded at all — `/mb/tracked` stays 1 throughout, so the receiver cannot tell and faithfully
+maps the discontinuity. **A guard that covers the obvious failure can make its neighbour invisible.**
+Fixed by locking onto a `TrackingId`, preferring the body nearest the sensor's centre line when
+re-choosing. This file had predicted it in the known-issues list and left it unfixed.
+
+### 8. The C# got its first test, ever — and the test improved the code
+
+`Program.cs` only builds on the PC (net48, `Microsoft.Kinect.dll` by absolute path), so it had
+never had a test of any kind. But the body-selection rule depends on nothing except the array of
+bodies — so the Kinect API surface it touches was **stubbed on the Mac** and the **real frame
+handler** driven through it. `tools/mac/verify-body-lock/run.sh`, **6/6**.
+
+Two things the chapter should say about it:
+
+- **It found a structural fault.** The lock release sat *after* the `osc == null` shutdown check,
+  so who the app followed depended on the state of the socket. Writing the test is what exposed it.
+- **It is kept out of `MoveBeat/` deliberately.** `MoveBeat.csproj` globs `**/*.cs`, so the stub
+  would collide with the real Kinect types and the test would be a second entry point: the PC
+  build would fail, and the auto-updater with it. **A test that breaks the build it protects is
+  worse than no test.**
+
+### 9. Both new tests were proven able to fail
+
+The project's own standard, and this session produced the two cleanest examples in it:
+
+| Test | Proven to fail by | What it printed |
+|---|---|---|
+| the ramp is live for the whole worst-case frame gap | reverting to the old 20 ms | **`moving 20 of 38 ms`** — the flat spot, measured |
+| a newcomer may not steal the stream | removing the lock lookup | `following 9` instead of `7` — the pop, on demand |
+
+**`moving 20 of 38 ms` is the single best figure the session produced** — it is the fault stated as
+a number, from a test, and it is the sixth screenshot this file already asks for.
+
+### 10. The numbers, for the chapter
+
+99/99 → **105/105** cell tests · **6/6** on the PC's body lock, from zero · ~386 object evaluations
+per frame ≈ 10–12k/s (exonerated) · ramp 20 ms → **40 ms** against a 31–38 ms frame gap · frame
+interval varies **±10%** · flat tread was **11–18 ms**, i.e. up to **47% of every frame** ·
+8 cells changed, **0 patchlines** · 3 agents, 2 overruled · **zero** Live event-buffer failures
+
+### 11. What was deliberately NOT done, and why — this belongs in Chapter 4
+
+Stating the costed, declined work is stronger than listing what was built:
+
+- **`mb_sources` computes all 26 `scale`/`clip` branches every frame** regardless of which ≤6 are
+  selected; each slot's `pow()` runs *before* its gate; a SWITCH still pays the whole FADER chain.
+  All real. All declined: `mb_sources` and `mb_slot` have **zero test coverage and no generator**,
+  so any change is a hand-edit of 4 MB of JSON in the busiest code — to buy CPU already measured as
+  not the problem.
+- **`[change]` on the hand-busy pair**, which re-emits every frame ungated. The one place `[change]`
+  is provably safe here — and still declined, because `build_zone_layer.py` is not idempotent and
+  cannot be re-run, so there is no regeneration path.
+- **Joint-coordinate smoothing**, for the residual sensor noise. Belongs on the Mac by the
+  weak-machine rule; the 40 ms ramp already low-passes the zone path.
+- **`udpreceive @defer 1`** — see §2.
+
+### 12. Five things worth saying in the chapter
+
+1. **"Make it faster" was the wrong diagnosis, and measurement said so before any code changed.**
+   The mapper had CPU to spare by two orders of magnitude. The fault was one ramp being shorter
+   than the interval it had to cover.
+2. **Fix the instrument before the thing it measures.** The ramp could not be shown to be wrong
+   until the harness stopped pretending ramps were instantaneous. Five instances now say the same.
+3. **A guard can hide its own neighbour.** Loss of tracking was handled with care; the body
+   *changing identity* was not handled at all, and the careful guard is part of why nobody looked.
+4. **The obvious optimisation was slower and cost a feature** — and only the artefact said so.
+5. **A test proven able to fail is worth more than a green suite**, and both of this session's
+   produce a number you can print: `moving 20 of 38 ms`, and `following 9 instead of 7`.
+
+---
+
 ## ▶ THE USER'S PLAN FROM HERE (agreed 2026-09-22, end of session)
 
 1. **Test the whole zone layer in Live.** Nothing in it has been watched running.
@@ -22,10 +211,27 @@ five screenshots and the three Chapter 4 entries.**
 
 Everything below serves those three, in order.
 
-## ▶ THE LIVE TEST — do this first, before any music
+## ▶ THE LIVE TEST — mostly done now, but read what is still unconfirmed
 
-Nothing in the zone layer has ever been watched running. It is proven only against a model of Max
-and a stubbed Live Set. **Expect to find things; that is what this session is for.**
+> **2026-10-06, evening — the user ran it in Live and reports everything working.** That retires
+> the old banner here ("nothing in the zone layer has ever been watched running"), which was true
+> until this date. The jitter the performer reported is gone after the ramp fix (`OUTPUT_RAMP_MS`,
+> see the chapter section at the top of this file), and the clicks after the body lock on the PC.
+>
+> **Be precise about what that does and does not cover**, because "everything works" is a
+> performer's report on the things they exercised, not a sweep of the checklist below. Still
+> **never confirmed end to end**, and still worth walking through:
+>
+> | | |
+> |---|---|
+> | **a mapping surviving save → close → reopen** | step 8 below. Never confirmed, and `ATTACK` is a new Live parameter that has to come back with them |
+> | **the stepper walking a whole piece** | step 9. One advance was seen, then the lockout stuck; the fix is tested and was not watched running. Do it with the transport **stopped** as well as running |
+> | **the acceptance test from ZONES.md** | step 10. Walk out of frame, wait, walk back in through a side zone |
+> | **side zones latching while standing still** | step 6. The risk swapped direction when `SIDE_ENTER` moved to 0.75 and nobody has stood still in front of it for long |
+> | **ABOVE's X, Z and SPREAD spans** | never revisited, same class of error as the side spans that were wrong until 2026-10-06 |
+
+It was proven against a model of Max and a stubbed Live Set first. **Expect the remaining items to
+find things; that is what they are for.**
 
 ### Before you start
 
