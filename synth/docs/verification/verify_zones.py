@@ -102,9 +102,10 @@ def fire_due():
             p=BODY if k[0]=='body' else ZONES
             p.emit(k[1],0,'bang')
 
-def frame(hL,hR,head=(0,0.72,2.5),sb=(0,0.0,2.5),ss=(0,0.50,2.5),tracked=1,ts=2.0,dt=33.0):
+def frame(hL,hR,head=(0,0.72,2.5),sb=(0,0.0,2.5),ss=(0,0.50,2.5),tracked=1,ts=2.0,dt=33.0,badjoint=None):
     for nm,v in (('spineB',sb),('head',head),('handL',hL),('handR',hR),('spineS',ss)):
-        BODY.send(BODY.inlets[{'handL':0,'handR':1,'head':2,'spineB':3,'spineS':4}[nm]],0,[v[0],v[1],v[2],ts])
+        t = 1.0 if nm==badjoint else ts                      # one joint inferred, the rest tracked - as verify_body.py
+        BODY.send(BODY.inlets[{'handL':0,'handR':1,'head':2,'spineB':3,'spineS':4}[nm]],0,[v[0],v[1],v[2],t])
     BODY.send(BODY.inlets[5],0,tracked)
     NOW[0]+=dt; fire_due()
     return OUT
@@ -154,7 +155,7 @@ TXT=[str(b.get('text','') or '') for b in ZB.values()]
 want_above='expr $f1 > $f2 + %s - $f3 * %s'%(Z.fmt(Z.ABOVE_ENTER),Z.fmt(Z.ABOVE_ENTER-Z.ABOVE_LEAVE))
 want_side =lambda s:'expr ($f1 * %s > %s - $f3 * %s) * (1 - $f2)'%(s,Z.fmt(Z.SIDE_ENTER),Z.fmt(Z.SIDE_ENTER-Z.SIDE_LEAVE))
 dels=sorted(int(t.split()[1]) for t in TXT if t.startswith('del '))
-want_dels=sorted([Z.COMMIT_ABOVE,Z.COMMIT_SIDE,Z.COMMIT_SIDE,Z.GRACE])
+want_dels=sorted([Z.COMMIT_ABOVE,Z.COMMIT_SIDE,Z.COMMIT_SIDE,Z.GRACE,Z.LOST_DEBOUNCE])
 R.append(TXT.count(want_above)==2 and TXT.count(want_side('1'))==2
          and TXT.count(want_side('-1'))==2 and dels==want_dels)
 print(f"    ABOVE enter head+{Z.fmt(Z.ABOVE_ENTER)}  leave head+{Z.fmt(Z.ABOVE_LEAVE)}")
@@ -237,5 +238,50 @@ run(frames(Z.COMMIT_SIDE)+1,**RGT); r=list(OUT['busy'])
 run(frames(Z.COMMIT_ABOVE)+2,**UPB); bb=list(OUT['busy'])
 R.append(n==[0,0] and r==[0,1] and bb==[1,1])
 print(f"    rest {n}   right hand out {r}   both hands up {bb}   [L,R]   {ok(R[-1])}")
+
+print(f"\nTEST 11  a one-frame valid blip must NOT block the fire")
+# THE FAULT THIS TEST EXISTS FOR, and it was measured rather than reasoned.  `valid`
+# demands all five joints at trackingState exactly 2, and a live stream from a real body
+# drops one about ONCE A SECOND - a hand crossing the torso, the head joint wobbling.
+# The fire-arm used to be driven straight off valid: it blocked the instant valid fell
+# and then needed GRACE ms of UNINTERRUPTED valid to re-arm, so the timer was reset
+# about as often as it could complete.  Replaying these same graphs against the live
+# stream showed the fire BLOCKED FOR 40 SECONDS STRAIGHT, and an abvB rising edge
+# arriving inside a blocked window and being refused with nothing printed anywhere.
+# That is what the performer reported as "the raise does not register consistently".
+#
+# TEST 9 did not catch it, and the reason is worth keeping: TEST 9 loses tracking with
+# tracked=0 for a whole second - the obvious failure, walking out of frame.  The blip is
+# its neighbour, and nothing looked at it.
+run(60,**REST);                      armed_before=OUT['armed']
+frame(ts=1.0,**REST);                blip=OUT['armed']      # ONE frame, joints inferred
+run(frames(Z.LOST_DEBOUNCE)+5,**REST);  after=OUT['armed']  # valid back, past the de-bounce
+# and a loss that really lasts must still block, or TEST 9's guarantee is gone
+run(frames(Z.LOST_DEBOUNCE)+5,tracked=0,**REST); genuine=OUT['armed']
+R.append(armed_before==1 and blip==1 and after==1 and genuine==0)
+print(f"    armed before the blip {armed_before}   during it {blip}   "
+      f"{Z.LOST_DEBOUNCE} ms after it {after}   after a real loss {genuine}   {ok(R[-1])}")
+
+print(f"\nTEST 12  a hand going inferred must NOT disarm the fire; losing the BODY must")
+# WHY THIS TEST EXISTS - a measurement, not a theory.  Driving these same two graphs from
+# the live Kinect stream while the performer danced: the raise itself was fine (44 raises,
+# 42 reached abvB), but handleft / handright LEFT trackingState 2 ABOUT 10-11 TIMES PER
+# 10 SECONDS, EACH DROPOUT LONGER THAN 500 ms.  A de-bounce on `valid` cannot cover that:
+# short enough to catch a real walk-out is shorter than these dropouts, long enough to
+# forgive them stops catching the walk-out.  So the fire was disarmed constantly and two
+# abvB rising edges were refused in silence.  The question was wrong - GRACE guards
+# against re-entering the FRAME, which is a BODY event, and /mb/tracked is that signal.
+# arm_from_tracked.py carries it through the pack and drives the fire-arm from it alone;
+# `valid` still blanks the nine zone flags.  TEST 11 cannot see this: its blip is one
+# frame, which the de-bounce forgives either way.  Phase b here is the whole test - one
+# hand inferred for LONGER than LOST_DEBOUNCE while the body stays tracked.
+run(60,**REST);                                          a=OUT['armed']   # settled, armed
+run(frames(Z.LOST_DEBOUNCE)+5,badjoint='handL',**REST);  b=OUT['armed']   # hand inferred, body tracked
+run(frames(Z.LOST_DEBOUNCE)+5,tracked=0,**REST);         c=OUT['armed']   # the BODY gone
+run(frames(Z.GRACE)+5,**REST);                           d=OUT['armed']   # back, past GRACE
+R.append(a==1 and b==1 and c==0 and d==1)
+dropout=(frames(Z.LOST_DEBOUNCE)+5)*FRAME
+print(f"    armed at rest {a}   left hand inferred for {dropout:.0f} ms with the body tracked {b}   <- must stay armed")
+print(f"    body lost for the same {dropout:.0f} ms {c}   <- must block   {Z.GRACE} ms after it returns {d}   {ok(R[-1])}")
 
 print(f"\n{'='*58}\n  {sum(R)}/{len(R)} PASS")

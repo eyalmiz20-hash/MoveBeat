@@ -20346,7 +20346,7 @@
                                 "box": {
                                     "id": "obj-62",
                                     "maxclass": "newobj",
-                                    "numinlets": 11,
+                                    "numinlets": 12,
                                     "numoutlets": 1,
                                     "outlettype": [
                                         ""
@@ -20354,10 +20354,10 @@
                                     "patching_rect": [
                                         30.0,
                                         780.0,
-                                        400.0,
+                                        430.0,
                                         22.0
                                     ],
-                                    "text": "pack 0 0. 0. 0. 0. 0. 0. 0. 0. 0. 0."
+                                    "text": "pack 0 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0"
                                 }
                             },
                             {
@@ -22209,6 +22209,18 @@
                                         0
                                     ]
                                 }
+                            },
+                            {
+                                "patchline": {
+                                    "destination": [
+                                        "obj-62",
+                                        11
+                                    ],
+                                    "source": [
+                                        "obj-59",
+                                        1
+                                    ]
+                                }
                             }
                         ]
                     },
@@ -22336,7 +22348,7 @@
                                         564.0,
                                         20.0
                                     ],
-                                    "text": "TIMING: hand-count commit 200 ms ABOVE / 60 ms the sides   fire re-arm after tracking returns 1000 ms"
+                                    "text": "TIMING: hand-count commit 200 ms ABOVE / 60 ms the sides   valid must stay low 500 ms to count as lost   fire re-arm after tracking returns 1000 ms"
                                 }
                             },
                             {
@@ -22393,7 +22405,7 @@
                                     "id": "obj-9",
                                     "maxclass": "newobj",
                                     "numinlets": 1,
-                                    "numoutlets": 11,
+                                    "numoutlets": 12,
                                     "outlettype": [
                                         "int",
                                         "float",
@@ -22405,15 +22417,16 @@
                                         "float",
                                         "float",
                                         "float",
-                                        "float"
+                                        "float",
+                                        "int"
                                     ],
                                     "patching_rect": [
                                         30.0,
                                         210.0,
-                                        430.0,
+                                        460.0,
                                         22.0
                                     ],
-                                    "text": "unpack 0 0. 0. 0. 0. 0. 0. 0. 0. 0. 0."
+                                    "text": "unpack 0 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0"
                                 }
                             },
                             {
@@ -23716,6 +23729,42 @@
                                         20.0
                                     ],
                                     "text": "fire armed"
+                                }
+                            },
+                            {
+                                "box": {
+                                    "id": "obj-84",
+                                    "maxclass": "newobj",
+                                    "numinlets": 2,
+                                    "numoutlets": 1,
+                                    "outlettype": [
+                                        "bang"
+                                    ],
+                                    "patching_rect": [
+                                        380.0,
+                                        1140.0,
+                                        80.0,
+                                        22.0
+                                    ],
+                                    "text": "del 500"
+                                }
+                            },
+                            {
+                                "box": {
+                                    "id": "obj-85",
+                                    "maxclass": "message",
+                                    "numinlets": 2,
+                                    "numoutlets": 1,
+                                    "outlettype": [
+                                        ""
+                                    ],
+                                    "patching_rect": [
+                                        380.0,
+                                        1100.0,
+                                        60.0,
+                                        22.0
+                                    ],
+                                    "text": "stop"
                                 }
                             }
                         ],
@@ -25217,29 +25266,6 @@
                             {
                                 "patchline": {
                                     "destination": [
-                                        "obj-74",
-                                        0
-                                    ],
-                                    "midpoints": [
-                                        609.5,
-                                        1095.0,
-                                        672.0,
-                                        1095.0,
-                                        672.0,
-                                        1125.0,
-                                        689.5,
-                                        1125.0
-                                    ],
-                                    "order": 0,
-                                    "source": [
-                                        "obj-71",
-                                        0
-                                    ]
-                                }
-                            },
-                            {
-                                "patchline": {
-                                    "destination": [
                                         "obj-75",
                                         0
                                     ],
@@ -25525,31 +25551,60 @@
                             {
                                 "patchline": {
                                     "destination": [
+                                        "obj-84",
+                                        0
+                                    ],
+                                    "source": [
+                                        "obj-71",
+                                        0
+                                    ]
+                                }
+                            },
+                            {
+                                "patchline": {
+                                    "destination": [
+                                        "obj-85",
+                                        0
+                                    ],
+                                    "source": [
+                                        "obj-71",
+                                        1
+                                    ]
+                                }
+                            },
+                            {
+                                "patchline": {
+                                    "destination": [
+                                        "obj-84",
+                                        0
+                                    ],
+                                    "source": [
+                                        "obj-85",
+                                        0
+                                    ]
+                                }
+                            },
+                            {
+                                "patchline": {
+                                    "destination": [
+                                        "obj-74",
+                                        0
+                                    ],
+                                    "source": [
+                                        "obj-84",
+                                        0
+                                    ]
+                                }
+                            },
+                            {
+                                "patchline": {
+                                    "destination": [
                                         "obj-70",
                                         0
                                     ],
-                                    "midpoints": [
-                                        450.5,
-                                        267.0,
-                                        294.375,
-                                        267.0,
-                                        294.375,
-                                        618.0,
-                                        315.0,
-                                        618.0,
-                                        315.0,
-                                        942.0,
-                                        345.0,
-                                        942.0,
-                                        345.0,
-                                        1017.0,
-                                        609.5,
-                                        1017.0
-                                    ],
-                                    "order": 0,
                                     "source": [
                                         "obj-9",
-                                        10
+                                        11
                                     ]
                                 }
                             }

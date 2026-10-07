@@ -88,6 +88,55 @@ COMMIT_SIDE = 60            # was 200.  Two frames at 30 Hz, and below the ~100 
 
 GRACE = 1000                # fire re-arms this long after tracking returns
 
+# ------------------------------------------------- the valid de-bounce, added 2026-10-07
+#
+# GRACE exists so that walking back into frame cannot advance the song.  It was driven
+# straight off `valid`, and that turned out to be the fault behind "the two-hands raise
+# does not register consistently" - measured, not reasoned:
+#
+#   valid demands all FIVE joints at trackingState exactly 2, every frame, and a live
+#   stream from a real body drops one of them about ONCE A SECOND - usually a hand
+#   crossing the torso or the head joint wobbling.  The old chain blocked the fire the
+#   instant valid fell and then needed GRACE = 1000 ms of UNINTERRUPTED valid to re-arm,
+#   so the timer was being reset about as often as it could complete.  Driving the real
+#   mb_body -> mb_zones graphs from the live stream showed the fire BLOCKED for 40
+#   seconds straight, and an abvB rising edge arriving inside a blocked window with no
+#   trace anywhere - the raise reached the stepper and was refused in silence.
+#
+# So `valid` now has to be LOW for this long before the zone layer will call it loss of
+# tracking.  A one-frame blip costs nothing at all; a performer leaving the frame still
+# blocks the fire exactly as before.
+#
+# RAISED FROM 250 TO 500 the same day, and the reason is a measurement rather than a
+# preference.  At 250 the blips were covered - BLOCKED events over a whole session fell
+# from 12-in-51-seconds to 2 - but one of the two survivors was this, from the live
+# stream driving the real graphs:
+#
+#     14:42:42  valid 1 -> 0   not tracked: handleft
+#     14:42:43  fire-arm -> BLOCKED              <- the de-bounce called it a real loss
+#     14:42:45  abvB RISING EDGE ... NOT ARMED   <- the raise fell inside the 1000 ms
+#
+# A single hand vanishing for 300-500 ms is not the performer leaving the room, but at
+# 250 it was being counted as one, and the raise two seconds later paid 250 + GRACE =
+# 1250 ms for it.  500 ms covers the hand dropouts that were actually measured.
+#
+#   500 ms   about 15 frames at 30 Hz.  The cost is that a genuine walk-out takes half
+#            a second to register as loss instead of a quarter - and half a second of a
+#            stale held pose does no damage, because nothing can fire from it: the
+#            coordinates simply stop changing.
+#
+# This is a DIFFERENT KIND of number from the ones above: those are geometry, this one
+# is a statement about how noisy the sensor is.  If a future camera is cleaner it can
+# come down; if a raise ever fires while the body is genuinely gone, it is too high.
+#
+# The proper fix, declined for now and worth recording: GRACE is guarding against
+# walking back INTO FRAME, which is a BODY event, so the fire-arm should be driven by
+# /mb/tracked rather than by `valid` - a hand going inferred should not enter into it at
+# all.  mb_body folds /mb/tracked into `valid` and does not pass it through separately,
+# so that means widening the pack between the two subpatchers and the unpack that reads
+# it: a deeper change to the verified path than a constant, for a deadline this close.
+LOST_DEBOUNCE = 500
+
 # --------------------------------------------------------------- the attack envelope
 #
 # Entering a zone used to step the knob to FROM in one frame.  Now the cell crossfades

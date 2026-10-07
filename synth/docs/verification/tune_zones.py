@@ -27,7 +27,11 @@ HOW EACH OBJECT IS IDENTIFIED
                             the [t i i] on inlet 0 to whichever test feeds it.  That
                             backward walk is what says which of the three zones this is;
                             the sign in a SIDE test separates left from right.
-    the grace timer         the one [del] no zone chain reaches.
+    the two fire-arm        both hang off the one [sel 0 1] that decodes `valid`, and
+    timers                  the BRANCH names them: outlet 0 (valid went low) carries the
+                            LOST_DEBOUNCE delay, outlet 1 (valid came back) carries
+                            GRACE.  Any other [del] is a timer nobody tunes, and is an
+                            error rather than something to ignore.
 
 If the graph ever stops matching, this script fails loudly with what it expected rather
 than writing a half-tuned patch.
@@ -131,11 +135,34 @@ def main():
     if set(commit_dels) != {'above', 'left', 'right'}:
         fail('did not find all three commit delays: %r' % sorted(commit_dels))
 
-    # ---- the grace timer: the one [del] no zone chain reaches ---------------
-    grace = [i for i in BOX if text(i).startswith('del ') and i not in commit_dels.values()]
-    if len(grace) != 1:
-        fail('expected exactly one non-commit [del] (the fire re-arm), found %r' % grace)
-    set_text(BOX[grace[0]], 'del %d' % Z.GRACE, 'fire re-arm')
+    # ---- the two fire-arm timers -------------------------------------------
+    # Both hang off the one [sel 0 1] that decodes `valid`, and the BRANCH says which is
+    # which: outlet 0 is valid going low, outlet 1 is valid coming back.  Identifying
+    # them by branch rather than by their current argument means neither can be written
+    # with the other's number, however they are laid out.
+    #   out0 (lost)     -> [del LOST_DEBOUNCE]   how long valid must stay low before the
+    #                                            zone layer calls it loss of tracking
+    #   out1 (returned) -> [del GRACE]           how long the fire stays blocked after
+    sels = [i for i in BOX if text(i) == 'sel 0 1']
+    if len(sels) != 1:
+        fail('expected exactly one [sel 0 1] (the fire-arm branch), found %r' % sels)
+    sel = sels[0]
+
+    arm_dels = {}
+    for branch, const, what in ((0, Z.LOST_DEBOUNCE, 'valid de-bounce'),
+                                (1, Z.GRACE, 'fire re-arm')):
+        d = [x for x, _ in FAN.get((sel, branch), []) if text(x).startswith('del ')]
+        if len(d) != 1:
+            fail('expected one [del] on [sel 0 1] outlet %d (%s), found %r'
+                 % (branch, what, d))
+        arm_dels[branch] = d[0]
+        set_text(BOX[d[0]], 'del %d' % const, what)
+
+    # Nothing else may be a [del]: a stray one would be a timer nobody is tuning.
+    known = set(commit_dels.values()) | set(arm_dels.values())
+    stray = [i for i in BOX if text(i).startswith('del ') and i not in known]
+    if stray:
+        fail('found [del] objects that belong to no known chain: %r' % stray)
 
     # ---- the comments that quote the numbers -------------------------------
     # A patch whose comments contradict its objects is worse than one with no comments.
@@ -150,8 +177,10 @@ def main():
                         Z.fmt(Z.SIDE_ENTER), Z.fmt(Z.SIDE_LEAVE)), 'comment THRESHOLDS')
         elif t.startswith('TIMING'):
             set_text(b, 'TIMING: hand-count commit %d ms ABOVE / %d ms the sides'
+                        '   valid must stay low %d ms to count as lost'
                         '   fire re-arm after tracking returns %d ms'
-                     % (Z.COMMIT_ABOVE, Z.COMMIT_SIDE, Z.GRACE), 'comment TIMING')
+                     % (Z.COMMIT_ABOVE, Z.COMMIT_SIDE, Z.LOST_DEBOUNCE, Z.GRACE),
+                     'comment TIMING')
         elif t.startswith('walking back into frame'):
             set_text(b, 'walking back into frame through a side zone must not advance '
                         'the song: %d ms' % Z.GRACE, 'comment re-arm')
